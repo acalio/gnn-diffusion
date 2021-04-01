@@ -30,6 +30,7 @@ class ICTest(unittest.TestCase):
         self.assertEqual(tlist, [[0, 1], [2], [3]])
         self.assertEqual(nodes, [0, 1, 2, 3])
 
+    @unittest.skip
     def testGenerator(self):
         ic = IndependendCascade()
         gen = CascadeGenerator(self.g, ic)
@@ -37,8 +38,21 @@ class ICTest(unittest.TestCase):
         print(cascades)
         self.assertTrue(len(cascades), 2)
 
+    @unittest.skip
     def testLT(self):
         lt = LinearThresholdModel()
         nodes, tlist = lt(self.g, (0, 1))
         self.assertEqual(tlist, [[0, 1], [2], [3]])
         self.assertEqual(nodes, [0, 1, 2, 3])
+
+    @unittest.skip
+    def testGeneratorRandomWalker(self):
+        ic = IndependendCascade()
+        gen = CascadeGenerator(self.g, ic)
+        nodes = []
+        self.g.forNodes(lambda v: nodes.append(v))
+        s = gen.random_walk(nodes, 2, 0.5)
+        print(s)
+
+
+

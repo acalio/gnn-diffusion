@@ -4,6 +4,8 @@ from numpy.linalg import norm
 import torch as th
 import dgl
 import networkx as nx
+from functools import reduce
+from collections import deque
 
 
 class CascadeDataset:
@@ -129,6 +131,56 @@ class CascadeDataset:
         # for each pair <x,y> compute the norm of the corresponding list
         def compute_norm(d): return {v: norm(l) for v, l in d.items()}
         return {u: compute_norm(udict) for u, udict in coordinates_dict.items()}
+
+    def window_weight(self, cascades, time_window):
+        """ Weights computation with a sliding window.
+
+        The correlations between any pair of nodes
+        activation is considered only within a particular
+        time frame.
+
+        For example, if a node is active at time t, it will be
+        responsible for any further activation up until
+        t + time_window
+
+        Parameters
+        ----------
+        cascades : list of cascades 
+          each cascade is a list of list of int (node indexes)
+        time_window : int
+          time window
+        Returns
+        -------
+        coordinates_dict : dict of dict
+          each entry <u,v> denotes the weight of the corresponding edge
+        """
+        coordinates_dict = defaultdict(lambda: defaultdict(int))
+
+        def inc(u, v):
+            """Increment the counter
+            at the given coordinates
+            """
+            coordinates_dict[u][v] += 1
+
+        # iterate over every cascade
+        for cascade in cascades:
+            # set the initial set of active nodes
+            active_nodes = cascade[0]
+            # list containing the size of the last time_window activations
+            backward_window = deque([len(active_nodes)] + [0]*(time_window-1))
+            for tlist in cascade[1:]:
+                # number of nodes activated in the last time_window time steps
+                back_limit = reduce(lambda x, y: x + y, backward_window)
+                # iterate for every time step of this cascade
+                _ = [inc(u, v) for u in active_nodes[-back_limit:]
+                     for v in tlist]
+                # add the nodes to the set of active_nodes
+                _ = [active_nodes.append(v) for v in tlist]
+
+                backward_window.pop()
+                backward_window.appendleft(len(tlist))
+
+        return coordinates_dict
 
     def get_graph(self, coordinates_dict):
         """ Create a DGL graph from the coordinates

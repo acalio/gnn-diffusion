@@ -13,8 +13,9 @@ from numpy.random import randint
 @click.option('--output', '-o', type=click.Path(), default=None)
 @click.option('--mode', '-m', type=click.Choice(["append", "new"]),
               default='append')
-@click.option('--strategy', '-s', type=click.Choice(['uniform', 'degree']),
+@click.option('--strategy', '-s', type=click.Choice(['uniform', 'degree', 'random-walk']),
               default='uniform')
+@click.option('--beta', '-b', type=float, default=1.0)
 @click.option('--separator', type=str, default=' ')
 @click.option('--first-node', type=int, default=0)
 @click.option('--comment-prefix', type=str, default='#')
@@ -26,6 +27,7 @@ def main(graph,
          output,
          mode,
          strategy,
+         beta,
          separator,
          first_node,
          comment_prefix):
@@ -51,9 +53,9 @@ def main(graph,
     cascade_generator = CascadeGenerator(g, dmodel)
     # get the cascades
     print("="*50 + "\nStart cascade generation with the following params")
-    print(f"\tsize:{size}\n\truns:{runs}\n\tstrategy:{strategy}")
+    print(f"\truns:{runs}\n\tstrategy:{strategy}")
     cascades = cascade_generator(size, runs,
-                                 seed_selection_strategy=strategy)
+                                 seed_selection_strategy=strategy, beta=beta)
 
     if output is None:
         # print on the screen
@@ -70,6 +72,7 @@ def main(graph,
                 # convert the list of active nodes into a string
                 active_string = " ".join(map(str, active_list))
                 f.write(f"{t}:{active_string}\n")
+
 
 if __name__ == '__main__':
     main()

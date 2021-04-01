@@ -10,7 +10,7 @@ NETWORK_PATH = "/home/antonio/git/gnn-diffusion/data/networks/nethept/graph_ic.i
 CASCADE_PATH = "/home/antonio/git/gnn-diffusion/data/cascades/nethept/prova.txt"
 
 
-def display_matrix(coordinates_dict):
+def get_matrix(coordinates_dict):
     max_value = reduce(max,
                        map(lambda t: max(t[0],
                                          reduce(max, map(max, t[1].items()))),
@@ -19,9 +19,13 @@ def display_matrix(coordinates_dict):
     matrix = np.zeros((max_value+1, max_value+1), dtype=int)
     for i in range(matrix.shape[0]):
         for j in range(matrix.shape[1]):
-            matrix[i, j] = coordinates_dict[i][j]
+            try: 
+                matrix[i, j] = coordinates_dict[i][j]
+            except KeyError:
+                pass
+    return matrix
 
-    # print
+def display_matrix(matrix):
     print("="*50)
     print(matrix)
 
@@ -66,9 +70,25 @@ def test_tempdiff_window():
         [[1], [2, 3], [4, 5], [6, 7], [8]],
         [[2], [1, 3], [4, 5], [8, 9, 10], [6]]
     ]
-    c = CascadeDataset(NETWORK_PATH, CASCADE_PATH)
+    c = CascadeDataset(NETWORK_PATH, CASCADE_PATH,
+                       strategy= "tempdiff", time_window=2)
+    
+    coord = c.tempdiff_weight_(cascades)
+    coord1 = c.tempdiff_weight(cascades, 0)
+    matrix, matrix1 = map(get_matrix, (coord, coord1))
+    assert (matrix == matrix1).all()
+
+@pytest.mark.skip("already tested")
+def test_counting_window():
+    cascades = [
+        [[1], [2, 3], [4, 5], [6, 7], [8]],
+        [[2], [1, 3], [4, 5], [8, 9, 10], [6]]
+    ]
+    c = CascadeDataset(NETWORK_PATH, CASCADE_PATH, time_window=2)
     coord = c.window_weight(cascades, 2)
-    display_matrix(coord)
+    coord1 = c.counting_weight(cascades, 2)
+    matrix, matrix1 = map(get_matrix, (coord, coord1))
+    assert (matrix == matrix1).all()
 
 
 @pytest.mark.skip("already tested")

@@ -2,7 +2,6 @@
 import torch as th
 import torch.nn as nn
 import dgl.function as fn
-import dgl.nn.pytorch as dglnn
 from dgl_diffusion.util import get_activation
 
 
@@ -79,7 +78,7 @@ class InfluenceGraphConv(nn.Module):
         return rst
 
 
-class InfluenceLayer(nn.Module):
+class InfluenceEncoder(nn.Module):
     """NN
     Attributes
     ----------
@@ -103,7 +102,7 @@ class InfluenceLayer(nn.Module):
     device : str, optional
     """
     def __init__(self, in_units, hid_units, out_units, agg_act, out_act, device='cpu'):
-        super(InfluenceLayer, self).__init__()
+        super(InfluenceEncoder, self).__init__()
 
         self.conv_layer = InfluenceGraphConv(in_units, hid_units)
         self.out_layer = nn.Linear(hid_units, out_units)
@@ -163,9 +162,9 @@ class InfluenceDecoder(nn.Module):
 
     """
 
-    def __init__(self, sequential_model):
+    def __init__(self, seq_dict):
         super(InfluenceDecoder, self).__init__()
-        self.decoder = sequential_model
+        self.decoder = nn.Sequential(seq_dict)
 
     def forward(self, graph, feat):
         """Forward function
@@ -196,24 +195,10 @@ class InfluenceDecoder(nn.Module):
 
 
 class InfEncDec(nn.Module):
-    def __init__(self,
-                 in_units,
-                 hid_units,
-                 out_units,
-                 agg_act,
-                 out_act,
-                 seq_args,
-                 device="cpu"):
+    def __init__(self, encoder, decoder,  device="cpu"):
         super(InfEncDec, self).__init__()
-        self.encoder = InfluenceLayer(in_units,
-                                      hid_units,
-                                      out_units,
-                                      agg_act,
-                                      out_act,
-                                      device)
-
-        seq_model = nn.Sequential(seq_args)
-        self.decoder = InfluenceDecoder(seq_model)
+        self.encoder = encoder
+        self.decoder = decoder
 
     def forward(self, graph, feat):
         out_feature = self.encoder(graph, feat)

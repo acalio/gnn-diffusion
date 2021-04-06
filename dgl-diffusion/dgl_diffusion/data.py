@@ -46,7 +46,7 @@ class CascadeDataset:
       original influence graph (ground truth)
     """
 
-    def __init__(self, graph_path, cascade_path, strategy='counting', **kwargs):
+    def __init__(self, graph_path, cascade_path, strategy='counting',  **kwargs):
         # get the strategy for the weights initialization
         strategy_fn = {
             'counting': self.counting_weight,
@@ -55,7 +55,7 @@ class CascadeDataset:
         cascades = load_cascades(cascade_path)
         # create the enc graph
         coordinates_dict = strategy_fn(cascades, **kwargs)
-        self.enc_graph = self.get_graph(coordinates_dict)
+        self.enc_graph = self.get_graph(coordinates_dict, normalize=True)
 
         # read the influence graph
         inf_graph = nx.read_weighted_edgelist(
@@ -186,21 +186,28 @@ class CascadeDataset:
         def compute_norm(d): return {v: norm(l) for v, l in d.items()}
         return {u: compute_norm(udict) for u, udict in coordinates_dict.items()}
 
-    def get_graph(self, coordinates_dict):
+    def get_graph(self, coordinates_dict, normalize=False):
         """ Create a DGL graph from the coordinates
         dictionary.
 
         Each entry of the dictionary corresponds to
         an edge of the graph
 
+        If normalize is true then weights are normalized:
+        for any node the sum of its incoming edges sum up to 1
+
         Parameters
         ----------
         coordinates_dict : dict of dict
           each entry <u,v> denotes the weight of the corresponding edge
+
+        normalize : bool, default True
+          apply edge weight normalization
+
         Returns
         -------
         graph: dgl.Graph
-          the dgl graph 
+          the dgl graph
         """
         src, dst, weights = edges = [], [], []
 
@@ -216,19 +223,26 @@ class CascadeDataset:
         # add the edge weights
         graph.edata['w'] = th.tensor(weights, dtype=th.float)
 
+        if normalize:
+            in_degrees = graph.in_degrees()
+
+            def normalize_weights(v):
+                v_in_edges = graph.in_edges(v, "eid")
+                graph.edata['w'][v_in_edges] = graph.edata['w'][v_in_edges]\
+                  .sum()/in_degrees[v]
+
+            _ = [normalize_weights(v.item()) for v in graph.nodes()]
+
         return graph
 
-    def get_target_negative_graph(self, k):
-        """ Create the negative graph by combining the
+    def get_target_graph(self):
+        """ Create the target graph by combining the
         enc_graph and dec_graph.
 
         More specifically, for every (u,v) in self.enc_graph,
 
           w_{uv} = w_{uv}^{dec_graph}  if (u,v) in self.dec_graph
           w_{uv} = 0 if (u,v) not in self.dec_graph
-
-        Also, for each node in self.enc_graph we add at most
-        k negative links
 
         Parameters
         ----------
@@ -257,6 +271,7 @@ class CascadeDataset:
 
             batch_append(u, v, w)
 
-        neg_graph = dgl.graph((src, dst))
-        neg_graph.edata['w'] = th.tensor(weights, dtype=th.float)
-        return neg_graph
+        target_graph = dgl.graph((src, dst))
+        target_graph.edata['w'] = th.tensor(weights, dtype=th.float)
+
+        return target_graph

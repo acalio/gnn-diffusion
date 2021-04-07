@@ -2,16 +2,30 @@ from collections import OrderedDict
 import torch as th
 import torch.nn as nn
 import torch.optim as optim
+from numpy.random import rand
 import dgl
 
 
-def load_cascades(path):
-    """Function for loading the cascades
+def load_cascades(path, max_cascade = None, randomness=False):
+    """Function for loading the cascades.
+    The file is always read line by line.
+    If max_cascade is set, then only the first max_cascade
+    cascades are read.
+    If randomness is set, once the a cascades is read from the file,
+    it has .5 chance to be loaded into the final result
+    
 
     Parameters
     ----------
     path : str
       path to the file containing the cascades
+
+    max_cascade : int, default -1
+      number of cascades to load from the file.
+      -1 means all the cascades are loaded
+
+    randomness : bool, defualt False
+      if True each cascade has 0.5 chance to be loaded
 
     Returns
     -------
@@ -42,6 +56,13 @@ def load_cascades(path):
             # a list of int
             active_list = [x for x in map(int, active_list_str.split())]
             cascades[-1].append(active_list)
+            # decide if this cascade has to be ignored
+            if randomness and rand() <= .5:
+                del cascades[-1]
+            # check if we have reached the max no. of cascades
+            if max_cascade and len(cascades) == max_cascade:
+                break
+
     return cascades
 
 

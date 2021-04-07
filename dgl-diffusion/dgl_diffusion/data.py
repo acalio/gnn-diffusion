@@ -46,13 +46,19 @@ class CascadeDataset:
       original influence graph (ground truth)
     """
 
-    def __init__(self, graph_path, cascade_path, strategy='counting',  **kwargs):
+    def __init__(self, graph_path,
+                 cascade_path,
+                 strategy='counting',
+                 max_cascade=-1,
+                 cascade_randomness=False,
+                 **kwargs):
         # get the strategy for the weights initialization
         strategy_fn = {
             'counting': self.counting_weight,
             'tempdiff': self.tempdiff_weight}[strategy]
 
-        cascades = load_cascades(cascade_path)
+        cascades = load_cascades(cascade_path, max_cascade=max_cascade,
+                                 randomness=cascade_randomness)
         # create the enc graph
         coordinates_dict = strategy_fn(cascades, **kwargs)
         self.enc_graph = self.get_graph(coordinates_dict, normalize=True)

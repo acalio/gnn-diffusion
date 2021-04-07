@@ -9,9 +9,8 @@ from dgl_diffusion.data import CascadeDataset
 from dgl_diffusion.model import InfluenceDecoder, InfluenceEncoder, InfEncDec
 import torch as th
 import torch.nn as nn
-from dgl_diffusion.util import get_optimizer, get_loss, get_architecture, construct_negative_graph
+from dgl_diffusion.util import get_optimizer, get_loss, get_architecture, construct_negative_graph, evaluate
 from numpy.random import permutation
-
 
 class ListParser(click.Option):
     def type_cast_value(self, ctx, value):
@@ -40,6 +39,8 @@ class ListParser(click.Option):
 @click.option("--test-size", type=float, default=0.2)
 @click.option("--validation-size", type=float, default=0.2)
 @click.option("--validation-interval", type=int, default=25)
+@click.option("--max-cascade", type=int, default=1)
+@click.option("--cascade-randomness", type=bool, default=False)
 def main(netpath,
          caspath,
          epochs,
@@ -57,7 +58,9 @@ def main(netpath,
          cascade_time_window,
          test_size,
          validation_size,
-         validation_interval):
+         validation_interval,
+         max_cascade,
+         cascade_randomness):
 
     # create the encoder
     encoder = InfluenceEncoder(
@@ -72,6 +75,8 @@ def main(netpath,
 
     # read the data
     data = CascadeDataset(netpath, caspath, strategy=cascade_strategy,
+                          max_cascade=max_cascade,
+                          randomness=cascade_randomness,
                           time_window=cascade_time_window)
 
     # initialize the optimizer

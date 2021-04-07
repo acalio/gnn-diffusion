@@ -135,6 +135,10 @@ class CascadeGenerator:
                 next_node = rn.choice(neigh)
                 current_node = next_node
                 if rn.rand() <= beta:
+                    if next_node in seeds:
+                        if next_node in seeds:
+                            # might be in a loop - start all over
+                            raise ValueError
                     seeds.add(next_node)
             except ValueError:
                 # some of the nodes has no out-neighbors

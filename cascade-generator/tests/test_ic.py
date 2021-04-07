@@ -45,13 +45,12 @@ class ICTest(unittest.TestCase):
         self.assertEqual(tlist, [[0, 1], [2], [3]])
         self.assertEqual(nodes, [0, 1, 2, 3])
 
-    @unittest.skip
     def testGeneratorRandomWalker(self):
         ic = IndependendCascade()
         gen = CascadeGenerator(self.g, ic)
         nodes = []
         self.g.forNodes(lambda v: nodes.append(v))
-        s = gen.random_walk(nodes, 2, 0.5)
+        s = gen.random_walk(nodes, 10, 0.5)
         print(s)
 
 

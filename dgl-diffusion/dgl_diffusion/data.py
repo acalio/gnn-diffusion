@@ -1,6 +1,8 @@
+from os.path import splitext
 from dgl_diffusion.util import load_cascades
 from collections import defaultdict
 from numpy.linalg import norm
+import pickle
 import torch as th
 import dgl
 import networkx as nx
@@ -51,17 +53,33 @@ class CascadeDataset:
                  strategy='counting',
                  max_cascade=-1,
                  cascade_randomness=False,
+                 save_cascade = None,
                  **kwargs):
         # get the strategy for the weights initialization
         strategy_fn = {
             'counting': self.counting_weight,
             'tempdiff': self.tempdiff_weight}[strategy]
 
-        cascades = load_cascades(cascade_path, max_cascade=max_cascade,
+        # check if the file is in pickle format
+        _, cascade_format = splitext(cascade_path)
+        if cascade_format == ".pickle":
+            #load from pickle
+            with open(cascade_path,'rb') as f:
+                cascades = pickle.load(f)
+        else:
+            # load from the text file
+            cascades = load_cascades(cascade_path, max_cascade=max_cascade,
                                  randomness=cascade_randomness)
+
+        if save_cascade is not None:
+            # save the cascades in pickle format
+            with open(save_cascade, 'wb') as f:
+                pickle.dump(cascades, f)
+                
+            
         # create the enc graph
         coordinates_dict = strategy_fn(cascades, **kwargs)
-        self.enc_graph = self.get_graph(coordinates_dict, normalize=True)
+        self.enc_graph = self.get_graph(coordinates_dict)
 
         # read the influence graph
         inf_graph = nx.read_weighted_edgelist(
@@ -250,11 +268,6 @@ class CascadeDataset:
           w_{uv} = w_{uv}^{dec_graph}  if (u,v) in self.dec_graph
           w_{uv} = 0 if (u,v) not in self.dec_graph
 
-        Parameters
-        ----------
-        k : int
-          maximum number of new negative edges to add to a source node
-
         Returns
         -------
         neg_graph : dgl.Graph
@@ -267,6 +280,7 @@ class CascadeDataset:
             edges[2].append(w)
 
         src_tensor, dst_tensor = self.enc_graph.edges()
+        neg_edge_cnt = 0
         for u, v in zip(src_tensor, dst_tensor):
             # check if we need to add more edges
             try:
@@ -274,10 +288,11 @@ class CascadeDataset:
                 w = self.dec_graph.edata['w'][eid].item()
             except dgl.DGLError:
                 w = 0
+                neg_edge_cnt += 1
 
             batch_append(u, v, w)
 
         target_graph = dgl.graph((src, dst))
         target_graph.edata['w'] = th.tensor(weights, dtype=th.float)
-
+        print(neg_edge_cnt)
         return target_graph

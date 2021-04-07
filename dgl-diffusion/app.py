@@ -41,6 +41,7 @@ class ListParser(click.Option):
 @click.option("--validation-interval", type=int, default=25)
 @click.option("--max-cascade", type=int, default=1)
 @click.option("--cascade-randomness", type=bool, default=False)
+@click.option("--save-cascade", type=click.Path(), default=None)
 def main(netpath,
          caspath,
          epochs,
@@ -60,7 +61,8 @@ def main(netpath,
          validation_size,
          validation_interval,
          max_cascade,
-         cascade_randomness):
+         cascade_randomness,
+         save_cascade):
 
     # create the encoder
     encoder = InfluenceEncoder(
@@ -76,7 +78,8 @@ def main(netpath,
     # read the data
     data = CascadeDataset(netpath, caspath, strategy=cascade_strategy,
                           max_cascade=max_cascade,
-                          randomness=cascade_randomness,
+                          cascade_randomness=cascade_randomness,
+                          save_cascade=save_cascade,
                           time_window=cascade_time_window)
 
     # initialize the optimizer
@@ -102,7 +105,7 @@ def main(netpath,
     training_mask[edge_permutation[:training_size]] = True
 
     validation_mask = th.zeros_like(training_mask, dtype=th.bool)
-    validation_mask[edge_permutation[training_size:validation_size]] = True
+    validation_mask[edge_permutation[training_size:training_size+validation_size]] = True
 
     test_mask = th.zeros_like(training_mask, dtype=th.bool)
     test_mask[edge_permutation[training_size+validation_size:]] = True

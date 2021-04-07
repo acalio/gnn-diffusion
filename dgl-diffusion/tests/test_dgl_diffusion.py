@@ -5,10 +5,11 @@ import torch as th
 import pytest
 import dgl
 import numpy as np
+import pickle
 
 NETWORK_PATH = "/home/antonio/git/gnn-diffusion/data/networks/nethept/graph_ic.inf"
 CASCADE_PATH = "/home/antonio/git/gnn-diffusion/data/cascades/nethept/prova.txt"
-
+CASCADE_CACHE_PATH = "/home/antonio/Garbage/prova.pickle"
 
 def get_matrix(coordinates_dict):
     max_value = reduce(max,
@@ -64,7 +65,7 @@ def test_tempdiff_weight():
         print(f'{x}:{coord[x]}')
         print("="*50)
 
-
+@pytest.mark.skip("already tested")
 def test_tempdiff_window():
     cascades = [
         [[1], [2, 3], [4, 5], [6, 7], [8]],
@@ -139,3 +140,18 @@ def test_graph_negative():
             ) == neg_graph.edata['w'][eid].item()
         except KeyError:
             assert neg_graph.edata['w'][eid].item() == 0
+
+def test_save_cascade():
+    c = CascadeDataset(NETWORK_PATH, CASCADE_PATH, save_cascade=CASCADE_CACHE_PATH)
+    cas = load_cascades(CASCADE_PATH)
+    with open(CASCADE_CACHE_PATH, 'rb') as f:
+        cass = pickle.load(f)
+
+    assert cas == cass
+
+
+def test_load_cascade():
+    c = CascadeDataset(NETWORK_PATH, CASCADE_CACHE_PATH)
+    cas = load_cascades(CASCADE_PATH)
+    
+    

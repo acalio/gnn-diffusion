@@ -1,12 +1,14 @@
 import os
 from dgl_diffusion.util import load_cascades
-from dgl_diffusion.data import CacadeDataset
+from dgl_diffusion.data import  CascadeDataset
 import torch as th
 import torch.nn as nn
 import pytest
 import dgl
-from dgl_diffusion.model import InfluenceGraphConv, InfluenceLayer, InfluenceDecoder, InfEncDec
+from dgl_diffusion.model import *
+from dgl_diffusion.persistance import PManager
 from collections import OrderedDict
+import pandas as pd
 
 DATA_HOME = "/home/antonio/git/gnn-diffusion/data/"
 
@@ -14,7 +16,7 @@ DATA_HOME = "/home/antonio/git/gnn-diffusion/data/"
 def setup():
     graph_path = os.path.join(DATA_HOME, "networks/nethept/graph_ic.inf")
     cascade_path = os.path.join(DATA_HOME, "cascades/nethept/prova1.txt")
-    data = CacadeDataset(graph_path, cascade_path)
+    data = CascadeDataset(graph_path, cascade_path)
     graph = data.enc_graph
 
     # create embedding layer
@@ -48,7 +50,7 @@ def test_graphConv():
 def test_infLayer():
     data, feat = setup()
     graph = data.enc_graph
-    ilayer = InfluenceLayer(124, 124, 124, "relu", "relu", "cpu")
+    ilayer = InfluenceEncoder(124, 124, 124, "relu", "relu", "cpu")
     conv = ilayer.conv_layer
 
     out_feat = ilayer(data.enc_graph, feat)
@@ -69,7 +71,7 @@ def test_infLayer():
 def test_decoder():
     data, feat = setup()
     graph = data.enc_graph
-    ilayer = InfluenceLayer(124, 124, 124, "relu", "relu", "cpu")
+    ilayer = InfluenceEncoder(124, 124, 124, "relu", "relu", "cpu")
     seq_dict = OrderedDict([
         ('linear1', nn.Linear(124*2, 124)),
         ('relu1', nn.ReLU()),
@@ -85,11 +87,11 @@ def test_decoder():
     pred = deco(graph, out_feat)
     print(pred.squeeze().shape)
 
-
+@pytest.mark.skip("already tested")
 def test_encoder_decoder():
     data, feat = setup()
     graph = data.enc_graph
-    ilayer = InfluenceLayer(124, 124, 124, "relu", "relu", "cpu")
+    ilayer = InfluenceEncoder(124, 124, 124, "relu", "relu", "cpu")
     seq_dict = OrderedDict([
         ('linear1', nn.Linear(124*2, 124)),
         ('relu1', nn.ReLU()),
@@ -101,3 +103,19 @@ def test_encoder_decoder():
 
     pred = net(graph, feat)
     print(pred.squeeze().shape)
+
+
+def test_persistence():
+    p = PManager("/home/antonio/Garbage/")
+    p.hash("prova")
+    p.hash("prova", "provata")
+    l = [1, 2, 3]
+    arch = ["relu", "ciao"]
+
+    def info(f):
+        f.write("Layers\n")
+        f.write(str(l))
+        f.write("Arch")
+        f.write(str(arch))
+    p.persist(("plist", info))
+    

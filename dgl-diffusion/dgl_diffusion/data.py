@@ -59,7 +59,6 @@ class CascadeDataset:
         strategy_fn = {
             'counting': self.counting_weight,
             'tempdiff': self.tempdiff_weight}[strategy]
-
         # check if the file is in pickle format
         _, cascade_format = splitext(cascade_path)
         if cascade_format == ".pickle":
@@ -75,8 +74,7 @@ class CascadeDataset:
             # save the cascades in pickle format
             with open(save_cascade, 'wb') as f:
                 pickle.dump(cascades, f)
-                
-            
+        
         # create the enc graph
         coordinates_dict = strategy_fn(cascades, **kwargs)
         self.enc_graph = self.get_graph(coordinates_dict)
@@ -84,6 +82,7 @@ class CascadeDataset:
         # read the influence graph
         inf_graph = nx.read_weighted_edgelist(
             graph_path, nodetype=int, create_using=nx.DiGraph())
+        
         self.dec_graph = dgl.from_networkx(inf_graph, edge_attrs=['weight'])
         # rename edata weight to w
         self.dec_graph.edata['w'] = self.dec_graph.edata['weight']
@@ -294,5 +293,4 @@ class CascadeDataset:
 
         target_graph = dgl.graph((src, dst))
         target_graph.edata['w'] = th.tensor(weights, dtype=th.float)
-        print(neg_edge_cnt)
         return target_graph

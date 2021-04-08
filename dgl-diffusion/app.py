@@ -9,8 +9,12 @@ from dgl_diffusion.data import CascadeDataset
 from dgl_diffusion.model import InfluenceDecoder, InfluenceEncoder, InfEncDec
 import torch as th
 import torch.nn as nn
-from dgl_diffusion.util import get_optimizer, get_loss, get_architecture, construct_negative_graph, evaluate
+from dgl_diffusion.util import get_optimizer, get_loss, get_architecture, construct_negative_graph, evaluate, MetricLogger, dgl_to_nx
+from dgl_diffusion.persistance import PManager
 from numpy.random import permutation
+from collections import OrderedDict
+import dgl
+import networkx as nx
 
 class ListParser(click.Option):
     def type_cast_value(self, ctx, value):
@@ -39,9 +43,11 @@ class ListParser(click.Option):
 @click.option("--test-size", type=float, default=0.2)
 @click.option("--validation-size", type=float, default=0.2)
 @click.option("--validation-interval", type=int, default=25)
-@click.option("--max-cascade", type=int, default=1)
+@click.option("--max-cascade", type=int, default=None)
 @click.option("--cascade-randomness", type=bool, default=False)
 @click.option("--save-cascade", type=click.Path(), default=None)
+@click.option("--training-log-interval", type=int, default=3)
+@click.option("--save-dir", type=click.Path(), default=None)
 def main(netpath,
          caspath,
          epochs,
@@ -62,7 +68,9 @@ def main(netpath,
          validation_interval,
          max_cascade,
          cascade_randomness,
-         save_cascade):
+         save_cascade,
+         training_log_interval,
+         save_dir):
 
     # create the encoder
     encoder = InfluenceEncoder(
@@ -81,6 +89,8 @@ def main(netpath,
                           cascade_randomness=cascade_randomness,
                           save_cascade=save_cascade,
                           time_window=cascade_time_window)
+    
+
 
     # initialize the optimizer
     opt = get_optimizer(optimizer)(net.parameters(), lr=learning_rate)
@@ -119,6 +129,11 @@ def main(netpath,
     training_labels = target_graph.edata['w'][training_mask]
     validation_labels = target_graph.edata['w'][validation_mask]
     test_labels = target_graph.edata['w'][test_mask]
+    
+    # preare the logger 
+    training_loss_logger = MetricLogger(['iter', 'rmse'], ['%d','%.4f'])
+    validation_loss_logger = MetricLogger(['iter', 'rmse'], ['%d', '%.4f'])
+    test_loss_logger = MetricLogger(['iter', 'rmse'], ['%d', '%.4f'])
 
     # define the loss function
     loss_fn = get_loss(loss)
@@ -129,6 +144,7 @@ def main(netpath,
     feat = embeddings.weight
     nn.init.xavier_uniform_(feat)
     with tqdm.trange(epochs) as pbar:
+        postfix_dict = OrderedDict({'loss': 'nan', 'val-loss': 'nan'})
         for epoch in pbar:
             net.train()
             predictions = net(data.enc_graph, feat)
@@ -139,13 +155,48 @@ def main(netpath,
             loss.backward()
             nn.utils.clip_grad_norm_(net.parameters(), 1)
             opt.step()
-            pbar.set_postfix({'loss': '%.03f' % loss.item()}, refresh=False)
+            postfix_dict['loss'] = '%.03f' % loss.item()
+            pbar.set_postfix(postfix_dict)
 
+            if epoch % training_log_interval == 0:
+                training_loss_logger.log(iter=epoch,rmse=loss.item()) 
+            
             if epoch % validation_interval == 0:
                 validation_loss = evaluate(net, loss_fn, data.enc_graph, feat, validation_labels, validation_mask)
-                pbar.set_postfix(
-                    {'val-loss': '%.03f' % validation_loss}, refresh=False)
+                validation_loss_logger.log(iter=epoch, rmse=validation_loss) 
+                postfix_dict['val-loss'] = '%.03f' % validation_loss
+                pbar.set_postfix(postfix_dict)
 
+    # persist data
+    if save_dir:
+        pm = PManager(save_dir)
+        print(str(encoder_units))
+        print(str(cascade_strategy))
+        # generate the hash
+        pm.hash(("epochs", epochs),
+                ("encoder_units", encoder_units),
+                ("encoder_agg_acc", encoder_agg_act),
+                ("encoder_out_act",encoder_out_act),
+                ("decoder_units", decoder_units),
+                ("decoder_act", decoder_act),
+                ("cascade_strategy",  cascade_strategy),
+                ("cascade_time_window",cascade_time_window),
+                ("max_cascade", max_cascade),
+                ("cascade_randomness", cascade_randomness))
+
+        nx_trg_graph = dgl_to_nx(target_graph)
+        nx_enc_graph = dgl_to_nx(data.enc_graph)
+
+        training_loss_logger_df = training_loss_logger.close()
+        validation_loss_logger_df = validation_loss_logger.close()
+#        training_loss_logger_df = training_loss_logger.close()     
+        
+        pm.persist(
+            ("targe_graph.edgelist", lambda f: nx.write_weighted_edgelist(nx_trg_graph, f), "wb"),
+            ("enc_graph.edgelist", lambda f: nx.write_weighted_edgelist(nx_enc_graph, f), "wb"),
+            ("train_logger.csv", lambda f: training_loss_logger_df.to_csv(f, index=None ), "wb"),
+            ("validation_logger.csv", lambda f: validation_loss_logger_df.to_csv(f, index=None ), "wb"))
+        pm.close()
 
 if __name__ == '__main__':
     main()

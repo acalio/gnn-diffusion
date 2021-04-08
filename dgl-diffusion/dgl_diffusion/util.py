@@ -1,9 +1,20 @@
 from collections import OrderedDict
+import pandas as pd
 import torch as th
 import torch.nn as nn
 import torch.optim as optim
 from numpy.random import rand
+import csv
 import dgl
+
+def dgl_to_nx(dgl_graph):
+    nxg = dgl.to_networkx(dgl_graph, edge_attrs=['w'])
+    # convert tensors to scalar values
+    for _, _, ed in nxg.edges(data=True):
+        ed['weight'] = ed['w'].detach().item()
+        del ed['w']
+
+    return nxg
 
 
 def load_cascades(path, max_cascade = None, randomness=False):
@@ -252,4 +263,51 @@ def evaluate(model, metric, graph, features, labels, mask):
         # compute the loss function
         loss_value = metric(pred.squeeze(), labels)
         return loss_value.item()
+
+
+
+class MetricLogger:
+    """Object for storing relevant information
+    during training.
+
+    Data will be saved in tabular form.
+    Each column is referenced by its name
+
+    Parameters
+    ----------
+    attr_names: list of string
+      names for the attributes of each entry
+
+    attr_formats: list of string
+      format strings for each attribute
+
+    Attributes
+    ----------
+    _attr_format_dict: OrderedDict
+      dictionary containing the names and the format
+      for each attribute
+
+    _file: file
+      file where will be stored
+
+    _csv: csv file
+      handle to the csv file
+
+    _data: list of dict
+    """
+    def __init__(self, attr_names, attr_formats):
+        self._attr_format_dict = OrderedDict(zip(attr_names, attr_formats))
+        self._data = []
+
+
+    def log(self, **kwargs):
+        """Record a new entry"""
+        self._data.append({attr_name:parse_format % kwargs[attr_name]
+                           for attr_name, parse_format in self._attr_format_dict.items()})
+
+    def close(self):
+        """Create and return a pandas data frame"""
+        return pd.DataFrame(self._data)
+
+
 

@@ -29,7 +29,7 @@ class ListParser(click.Option):
 @click.option('--epochs', '-e', type=int, default=100)
 @click.option('--optimizer', '-o', type=click.Choice(["adam", "sgd"]), default="adam")
 @click.option('--learning-rate', '-lr', type=float, default=0.001)
-@click.option("--loss", '-l', type=click.Choice(["mse", "mae"]), default="mse")
+@click.option("--loss", '-l', type=click.Choice(["mse", "mae", "huber", "lgcos"]), default="mse")
 @click.option("--device", type=int, default=-1)
 @click.option("--encoder-units", cls=ListParser, required=True)
 @click.option("--encoder-agg-act", type=str, required=True)

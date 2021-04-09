@@ -118,11 +118,17 @@ def get_loss(loss):
     -------
     ret: callable function
     """
+    class LogCosh:
+        def __call__(self, pred, labels):
+            return th.sum(th.log(th.cosh(pred - labels)))
+        
     if isinstance(loss, str):
         try:
             loss_fn = {
                 "mse": nn.MSELoss,
-                "mae": nn.L1Loss
+                "mae": nn.L1Loss,
+                "huber":nn.SmoothL1Loss,
+                "lgcos": LogCosh,
             }[loss]()
             return loss_fn
         except KeyError:

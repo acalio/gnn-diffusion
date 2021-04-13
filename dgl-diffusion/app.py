@@ -51,6 +51,7 @@ class ListParser(click.Option):
 @click.option("--data-repo", type=click.Path(), default=None)
 @click.option("--results-repo", type=click.Path(), default=None)
 @click.option("--force", type=bool, default=False)
+@click.option("--normalize-weights/--no-normalize-weights", default=False)
 def main(netpath,
          cascade_path,
          epochs,
@@ -75,7 +76,8 @@ def main(netpath,
          training_log_interval,
          data_repo,
          results_repo,
-         force):
+         force,
+         normalize_weights):
 
     # create the encoder
     encoder = InfluenceEncoder(
@@ -97,7 +99,7 @@ def main(netpath,
         # check if the enc_graph is already
         # available in the data repository
         data_pm = PManager(data_repo, force)
-        # create the hash
+        # create the hash 
         data_pm.hash(("infgraph",os.path.basename(netpath)),
                      ("cascade",os.path.basename(cascade_path)),
                      ("cascade_strategy",cascade_strategy),
@@ -118,6 +120,7 @@ def main(netpath,
         builder.strategy = cascade_strategy
         builder.max_cascade = max_cascade
         builder.save_cascade = save_cascade
+        builder.edge_weights_normalization = normalize_weights
         load_kws['time_window'] = cascade_time_window
 
     data = builder.build(**load_kws)
@@ -217,7 +220,7 @@ def main(netpath,
 
         training_loss_logger_df = training_loss_logger.close()
         validation_loss_logger_df = validation_loss_logger.close()
-        
+
         pm.persist(
             ("target_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(target_graph), f), "wb"),
             ("enc_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(data.enc_graph), f), "wb"),

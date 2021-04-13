@@ -16,7 +16,25 @@ def dgl_to_nx(dgl_graph):
 
     return nxg
 
+def nx_to_dgl(nx_graph):
+    # convert the nx graph into a tuple of nodes tensors
+    src, dst, weights = edges = [],[],[]
 
+    def batch_append(s, t, w):
+        edges[0].append(s)
+        edges[1].append(t)
+        edges[2].append(w)
+        
+    _ = [batch_append(s,d,ed['weight'])
+         for s, d, ed in nx_graph.edges(data=True)]
+    
+    return edges_to_dgl(src, dst, weights)
+
+def edges_to_dgl(src, dst, weights):
+    dgl_graph = dgl.graph((src, dst))
+    dgl_graph.edata['w'] = th.tensor(weights, dtype=th.float)
+    return dgl_graph
+    
 def load_cascades(path, max_cascade = None, randomness=False):
     """Function for loading the cascades.
     The file is always read line by line.

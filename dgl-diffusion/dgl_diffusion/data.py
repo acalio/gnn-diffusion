@@ -1,5 +1,5 @@
 from os.path import splitext, basename
-from dgl_diffusion.util import load_cascades
+from dgl_diffusion.util import load_cascades, nx_to_dgl, edges_to_dgl
 from collections import defaultdict
 from numpy.linalg import norm
 import pickle
@@ -221,10 +221,9 @@ class CascadeDataset:
 
         _ = [batch_append(u, v, w) for u in coordinates_dict for v,
              w in coordinates_dict[u].items()]
+        print(edges)
         # create the graph
-        graph = dgl.graph((src, dst))
-        # add the edge weights
-        graph.edata['w'] = th.tensor(weights, dtype=th.float)
+        graph = edges_to_dgl(src, dst, weights)
 
         if normalize:
             in_degrees = graph.in_degrees()
@@ -271,12 +270,9 @@ class CascadeDataset:
 
             batch_append(u, v, w)
 
-        target_graph = dgl.graph((src, dst))
-        target_graph.edata['w'] = th.tensor(weights, dtype=th.float)
-        return target_graph
+        return edges_to_dgl(src, dst, weights)
 
-
-class CascadeDatasetBuilder():
+class CascadeDatasetBuilder:
     """Class responsible for 
     building the dataset. 
     There are two main options:
@@ -299,6 +295,7 @@ class CascadeDatasetBuilder():
         self._max_cascade = -1
         self._cascade_randomness = False
         self._save_cascade = None
+        self._edge_weights_normalization = False
 
     @property
     def graph_path(self):
@@ -358,6 +355,14 @@ class CascadeDatasetBuilder():
     def save_cascade(self, save_cascade):
         self._save_cascade = save_cascade
 
+    @property
+    def edge_weights_normalization(self):
+        return self._edge_weights_normalization
+
+    @edge_weights_normalization.setter
+    def edge_weights_normalization(self, edge_normalization):
+        self._edge_weights_normalization = edge_normalization
+
     def build(self, **kwargs) -> CascadeDataset:
         d = CascadeDataset()
 
@@ -380,7 +385,7 @@ class CascadeDatasetBuilder():
                                          randomness=self._cascade_randomness)
 
                 coordinates_dict = strategy_fn(cascades, **kwargs)
-                enc_graph = d.get_graph(coordinates_dict)
+                enc_graph = d.get_graph(coordinates_dict, self._edge_weights_normalization)
                 if self._save_cascade:
                     # save the cascade
                     with open(self._save_cascade) as f:
@@ -392,9 +397,11 @@ class CascadeDatasetBuilder():
                                                      create_using=nx.DiGraph(), 
                                                      nodetype=int)
             
-            enc_graph = dgl.from_networkx(nx_enc_graph, edge_attrs=["weight"])
-            enc_graph.edata['w'] = enc_graph.edata['weight']
-            del enc_graph.edata['weight']
+            # enc_graph = dgl.from_networkx(nx_enc_graph, edge_attrs=["weight"])
+            # enc_graph.edata['w'] = enc_graph.edata['weight']
+            
+            # del enc_graph.edata['weight']
+            enc_graph = nx_to_dgl(nx_enc_graph)
 
         else:
             raise ValueError("You must specifiy the encoded graph")
@@ -403,9 +410,11 @@ class CascadeDatasetBuilder():
         nx_inf_graph = nx.read_weighted_edgelist(self._graph_path,
                                                  create_using=nx.DiGraph(),
                                                  nodetype=int)
-        inf_graph = dgl.from_networkx(nx_inf_graph, edge_attrs=["weight"])
-        inf_graph.edata['w'] = inf_graph.edata['weight']
-        del inf_graph.edata['weight']
+        
+        inf_graph = nx_to_dgl(nx_inf_graph)
+        # inf_graph = dgl.from_networkx(nx_inf_graph, edge_attrs=["weight"])
+        # inf_graph.edata['w'] = inf_graph.edata['weight']
+        # del inf_graph.edata['weight']
 
         d.enc_graph = enc_graph
         d.inf_graph = inf_graph

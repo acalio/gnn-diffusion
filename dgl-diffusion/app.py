@@ -1,11 +1,12 @@
 """
 Training the model
 """
+import os
 import sys
 import click
 import tqdm
 import ast
-from dgl_diffusion.data import CascadeDataset
+from dgl_diffusion.data import CascadeDatasetBuilder
 from dgl_diffusion.model import InfluenceDecoder, InfluenceEncoder, InfEncDec
 import torch as th
 import torch.nn as nn
@@ -25,7 +26,7 @@ class ListParser(click.Option):
 
 @click.command()
 @click.argument('netpath', type=click.Path(exists=True))
-@click.argument('caspath', type=click.Path(exists=True))
+@click.argument('cascade-path', type=click.Path(exists=True), default=None)
 @click.option('--epochs', '-e', type=int, default=100)
 @click.option('--optimizer', '-o', type=click.Choice(["adam", "sgd"]), default="adam")
 @click.option('--learning-rate', '-lr', type=float, default=0.001)
@@ -47,9 +48,11 @@ class ListParser(click.Option):
 @click.option("--cascade-randomness", type=bool, default=False)
 @click.option("--save-cascade", type=click.Path(), default=None)
 @click.option("--training-log-interval", type=int, default=3)
-@click.option("--save-dir", type=click.Path(), default=None)
+@click.option("--data-repo", type=click.Path(), default=None)
+@click.option("--results-repo", type=click.Path(), default=None)
+@click.option("--force", type=bool, default=False)
 def main(netpath,
-         caspath,
+         cascade_path,
          epochs,
          optimizer,
          learning_rate,
@@ -70,7 +73,9 @@ def main(netpath,
          cascade_randomness,
          save_cascade,
          training_log_interval,
-         save_dir):
+         data_repo,
+         results_repo,
+         force):
 
     # create the encoder
     encoder = InfluenceEncoder(
@@ -84,14 +89,39 @@ def main(netpath,
     net = InfEncDec(encoder, decoder)
 
     # read the data
-    data = CascadeDataset(netpath, caspath, strategy=cascade_strategy,
-                          max_cascade=max_cascade,
-                          cascade_randomness=cascade_randomness,
-                          save_cascade=save_cascade,
-                          time_window=cascade_time_window)
+    builder = CascadeDatasetBuilder()
+    builder.graph_path = netpath
+    load_kws = dict()
+    data_pm, already_in_repo = None, False
+    if data_repo:
+        # check if the enc_graph is already
+        # available in the data repository
+        data_pm = PManager(data_repo, force)
+        # create the hash
+        data_pm.hash(("infgraph",os.path.basename(netpath)),
+                     ("cascade",os.path.basename(cascade_path)),
+                     ("cascade_strategy",cascade_strategy),
+                     ("cascade_time_window",cascade_time_window),
+                     ("max_cascade", max_cascade))
+
+        # check if the folder for the given
+        # parameters already exists
+        cascade_folder = os.path.join(data_repo, data_pm.hex())
+        if os.path.exists(cascade_folder):
+            # load the enc_graph
+            builder.enc_graph_path = os.path.join(cascade_folder, "enc_graph.edgelist")
+            already_in_repo = True
+
+    if not (data_repo and already_in_repo):
+        # specify the parameters to read the cascades
+        builder.cascade_path = cascade_path
+        builder.strategy = cascade_strategy
+        builder.max_cascade = max_cascade
+        builder.save_cascade = save_cascade
+        load_kws['time_window'] = cascade_time_window
+
+    data = builder.build(**load_kws)
     
-
-
     # initialize the optimizer
     opt = get_optimizer(optimizer)(net.parameters(), lr=learning_rate)
 
@@ -167,13 +197,13 @@ def main(netpath,
                 postfix_dict['val-loss'] = '%.03f' % validation_loss
                 pbar.set_postfix(postfix_dict)
 
-    # persist data
-    if save_dir:
-        pm = PManager(save_dir)
-        print(str(encoder_units))
-        print(str(cascade_strategy))
+    # persist results
+    if results_repo:
+        pm = PManager(results_repo, force)
         # generate the hash
-        pm.hash(("epochs", epochs),
+        pm.hash(("infgraph", os.path.basename(netpath)),
+                ("cascade", os.path.basename(cascade_path)), 
+                ("epochs", epochs),
                 ("encoder_units", encoder_units),
                 ("encoder_agg_acc", encoder_agg_act),
                 ("encoder_out_act",encoder_out_act),
@@ -184,19 +214,23 @@ def main(netpath,
                 ("max_cascade", max_cascade),
                 ("cascade_randomness", cascade_randomness))
 
-        nx_trg_graph = dgl_to_nx(target_graph)
-        nx_enc_graph = dgl_to_nx(data.enc_graph)
 
         training_loss_logger_df = training_loss_logger.close()
         validation_loss_logger_df = validation_loss_logger.close()
-#        training_loss_logger_df = training_loss_logger.close()     
         
         pm.persist(
-            ("targe_graph.edgelist", lambda f: nx.write_weighted_edgelist(nx_trg_graph, f), "wb"),
-            ("enc_graph.edgelist", lambda f: nx.write_weighted_edgelist(nx_enc_graph, f), "wb"),
+            ("target_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(target_graph), f), "wb"),
+            ("enc_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(data.enc_graph), f), "wb"),
             ("train_logger.csv", lambda f: training_loss_logger_df.to_csv(f, index=None ), "wb"),
             ("validation_logger.csv", lambda f: validation_loss_logger_df.to_csv(f, index=None ), "wb"))
         pm.close()
 
+    # save the encoded graph
+    if data_pm:
+        data_pm.persist(
+            ("target_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(target_graph), f), "wb"),
+            ("enc_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(data.enc_graph), f), "wb"))
+        data_pm.close()
+        
 if __name__ == '__main__':
     main()

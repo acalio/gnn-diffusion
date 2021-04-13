@@ -1,4 +1,4 @@
-from os.path import splitext
+from os.path import splitext, basename
 from dgl_diffusion.util import load_cascades
 from collections import defaultdict
 from numpy.linalg import norm
@@ -48,45 +48,25 @@ class CascadeDataset:
       original influence graph (ground truth)
     """
 
-    def __init__(self, graph_path,
-                 cascade_path,
-                 strategy='counting',
-                 max_cascade=-1,
-                 cascade_randomness=False,
-                 save_cascade = None,
-                 **kwargs):
-        # get the strategy for the weights initialization
-        strategy_fn = {
-            'counting': self.counting_weight,
-            'tempdiff': self.tempdiff_weight}[strategy]
-        # check if the file is in pickle format
-        _, cascade_format = splitext(cascade_path)
-        if cascade_format == ".pickle":
-            #load from pickle
-            with open(cascade_path,'rb') as f:
-                cascades = pickle.load(f)
-        else:
-            # load from the text file
-            cascades = load_cascades(cascade_path, max_cascade=max_cascade,
-                                 randomness=cascade_randomness)
+    def __init__(self):
+        self._enc_graph = None
+        self._dec_graph = None
 
-        if save_cascade is not None:
-            # save the cascades in pickle format
-            with open(save_cascade, 'wb') as f:
-                pickle.dump(cascades, f)
-        
-        # create the enc graph
-        coordinates_dict = strategy_fn(cascades, **kwargs)
-        self.enc_graph = self.get_graph(coordinates_dict)
+    @property
+    def enc_graph(self):
+        return self._enc_graph
 
-        # read the influence graph
-        inf_graph = nx.read_weighted_edgelist(
-            graph_path, nodetype=int, create_using=nx.DiGraph())
-        
-        self.dec_graph = dgl.from_networkx(inf_graph, edge_attrs=['weight'])
-        # rename edata weight to w
-        self.dec_graph.edata['w'] = self.dec_graph.edata['weight']
-        del self.dec_graph.edata['weight']
+    @enc_graph.setter
+    def enc_graph(self, enc_graph):
+        self._enc_graph = enc_graph
+
+    @property
+    def dec_graph(self):
+        return self._dec_graph
+
+    @dec_graph.setter
+    def inf_graph(self, dec_graph):
+        self._dec_graph = dec_graph
 
     def counting_weight(self, cascades, time_window=0):
         """ Counting strategy
@@ -294,3 +274,154 @@ class CascadeDataset:
         target_graph = dgl.graph((src, dst))
         target_graph.edata['w'] = th.tensor(weights, dtype=th.float)
         return target_graph
+
+
+class CascadeDatasetBuilder():
+    """Class responsible for 
+    building the dataset. 
+    There are two main options:
+    
+    i) Create the dataset by providing 
+       the influence graph and the cascade file
+
+    ii) Create the dataset by providing two 
+       edgelist files: 
+       - the influence graph, i.e., the dec_graph
+       - the cascade graph, i.e., the enc_graph
+
+    """
+    def __init__(self):
+        # init everything to None
+        self._graph_path = None
+        self._enc_graph_path = None
+        self._cascade_path = None
+        self._strategy = None
+        self._max_cascade = -1
+        self._cascade_randomness = False
+        self._save_cascade = None
+
+    @property
+    def graph_path(self):
+        return self._graph_path
+
+    @graph_path.setter
+    def graph_path(self, graph_path):
+        self._graph_path = graph_path
+
+    @property
+    def enc_graph_path(self):
+        return self._enc_graph_path
+
+    @enc_graph_path.setter
+    def enc_graph_path(self, enc_graph_path):
+        self._enc_graph_path = enc_graph_path
+
+    @property
+    def cascade_path(self):
+        return self._cascade_path
+
+    @cascade_path.setter
+    def cascade_path(self, cascade_path):
+        self._cascade_path = cascade_path
+
+    @property
+    def strategy(self):
+        return self._strategy
+        
+    @strategy.setter
+    def strategy(self, strategy):
+        if strategy not in ("counting", "tempdiff"):
+            raise ValueError(f"Strategy {strategy} unknown")
+        self._strategy = strategy
+
+    @property
+    def max_cascade(self):
+        return self._max_cascade
+
+    @max_cascade.setter
+    def max_cascade(self, max_cascade):
+        self._max_cascade = max_cascade
+
+    @property
+    def cascade_randomness(self):
+        return self._cascade_randomness
+
+    @cascade_randomness.setter
+    def cascade_randomness(self, cascade_randomness):
+        self.cascade_randonness = cascade_randomness
+
+    @property
+    def save_cascade(self):
+        return self._save_cascade
+
+    @save_cascade.setter
+    def save_cascade(self, save_cascade):
+        self._save_cascade = save_cascade
+
+    def build(self, **kwargs) -> CascadeDataset:
+        d = CascadeDataset()
+
+        # load/create the encoded graph            
+        if self._cascade_path:
+            _, cascade_format = splitext(self._cascade_path)
+            if cascade_format == ".pickle":
+                # load from pickle
+                with open(self._cascade_path, 'rb') as f:
+                    cascades = pickle.load(f)
+
+            else:
+                strategy_fn = {
+                    'counting': d.counting_weight,
+                    'tempdiff': d.tempdiff_weight
+                }[self._strategy]
+
+                cascades = load_cascades(self.cascade_path,
+                                         max_cascade=self._max_cascade,
+                                         randomness=self._cascade_randomness)
+
+                coordinates_dict = strategy_fn(cascades, **kwargs)
+                enc_graph = d.get_graph(coordinates_dict)
+                if self._save_cascade:
+                    # save the cascade
+                    with open(self._save_cascade) as f:
+                        pickle.dump(cascades, f)
+
+        elif self._enc_graph_path:
+            # the encoded graph is provided in edgelist format
+            nx_enc_graph = nx.read_weighted_edgelist(self._enc_graph_path,
+                                                     create_using=nx.DiGraph(), 
+                                                     nodetype=int)
+            
+            enc_graph = dgl.from_networkx(nx_enc_graph, edge_attrs=["weight"])
+            enc_graph.edata['w'] = enc_graph.edata['weight']
+            del enc_graph.edata['weight']
+
+        else:
+            raise ValueError("You must specifiy the encoded graph")
+
+        # load the influence graph
+        nx_inf_graph = nx.read_weighted_edgelist(self._graph_path,
+                                                 create_using=nx.DiGraph(),
+                                                 nodetype=int)
+        inf_graph = dgl.from_networkx(nx_inf_graph, edge_attrs=["weight"])
+        inf_graph.edata['w'] = inf_graph.edata['weight']
+        del inf_graph.edata['weight']
+
+        d.enc_graph = enc_graph
+        d.inf_graph = inf_graph
+
+        return d
+        
+            
+            
+
+            
+
+            
+                
+
+                
+
+            
+
+

@@ -1,9 +1,10 @@
 import hashlib
 import os
 import sys
+from itertools import chain
 
 class PManager:
-    def __init__(self, save_dir):
+    def __init__(self, save_dir, force_overwrite = False):
         """
         Attributes
         ----------
@@ -21,11 +22,15 @@ class PManager:
         save_dir : str
           path of the root directory
 
+        force_overwrite : bool, default False
+          if True the folder will update without asking
+          the user for permission
         """
         self.save_dir = save_dir
         self.h = hashlib.sha256()
         self.hashed_values = []
         self.tree_generated = False
+        self.force_overwrite = force_overwrite
 
 
     def hash(self, *value):
@@ -52,6 +57,9 @@ class PManager:
                 v_str = str(v)
             self.h.update(b"{v_str}")
 
+    def hex(self):
+        return self.h.hexdigest()
+
     def generate_tree(self):
         """Initialize the tree
         structure where to save the
@@ -66,12 +74,13 @@ class PManager:
         try: 
             os.makedirs(self.save_dir)
         except FileExistsError:
-            print(f"{self.save_dir} already exists. Override? [y/n]")
-            while True:
+            while not self.force_overwrite:
+                print(f"{self.save_dir} already exists. Override? [y/n]")
                 decision = input()
                 decision = decision.lower()
                 if decision not in ("y", "n"):
-                    print("I do not understand. [y/n]")
+                    print(f"{decision} What?????")
+                    continue
                 elif decision == "y":
                     os.makedirs(self.save_dir, exist_ok=True)
                     break
@@ -80,8 +89,6 @@ class PManager:
                     self.save_dir = None
                     break
 
-            self.tree_generated = True
-            
         # freeze the hash
         self.tree_generated = True
 
@@ -101,7 +108,7 @@ class PManager:
                 fn(f)
 
 
-    def close(self):
+    def close(self, *additional_info):
         if not self.tree_generated:
             self.generate_tree()
 
@@ -111,6 +118,6 @@ class PManager:
             return
         
         with open(os.path.join(self.save_dir, "readme.txt"), 'w') as f:
-            for pname, pvalue in self.hashed_values:
-                f.write(f"{pname}\n\t{pvalue}\n")
+            for pname, pvalue in chain(self.hashed_values, additional_info):
+                f.write(f"{pname}:{pvalue}\n")
 

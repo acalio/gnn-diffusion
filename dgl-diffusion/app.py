@@ -1,6 +1,7 @@
 """
 Training the model
 """
+import time
 import os
 import sys
 import click
@@ -52,6 +53,7 @@ class ListParser(click.Option):
 @click.option("--results-repo", type=click.Path(), default=None)
 @click.option("--force", type=bool, default=False)
 @click.option("--normalize-weights/--no-normalize-weights", default=False)
+@click.option("--evaluation-metric", type=click.Choice(["mse", "mae"]), default="mse")
 def main(netpath,
          cascade_path,
          epochs,
@@ -77,7 +79,8 @@ def main(netpath,
          data_repo,
          results_repo,
          force,
-         normalize_weights):
+         normalize_weights,
+         evaluation_metric):
 
     # create the encoder
     encoder = InfluenceEncoder(
@@ -110,6 +113,7 @@ def main(netpath,
         # parameters already exists
         cascade_folder = os.path.join(data_repo, data_pm.hex())
         if os.path.exists(cascade_folder):
+            print("Loading graph from data repository")
             # load the enc_graph
             builder.enc_graph_path = os.path.join(cascade_folder, "enc_graph.edgelist")
             already_in_repo = True
@@ -163,13 +167,16 @@ def main(netpath,
     validation_labels = target_graph.edata['w'][validation_mask]
     test_labels = target_graph.edata['w'][test_mask]
     
-    # preare the logger 
-    training_loss_logger = MetricLogger(['iter', 'rmse'], ['%d','%.4f'])
-    validation_loss_logger = MetricLogger(['iter', 'rmse'], ['%d', '%.4f'])
-    test_loss_logger = MetricLogger(['iter', 'rmse'], ['%d', '%.4f'])
+    # preare the logger
+    training_logger = MetricLogger(['iter', 'time',  loss, evaluation_metric], ['%d','%d', '%.4f', '%.4f'])
+    validation_logger = MetricLogger(['iter',  evaluation_metric], ['%d', '%.4f'])
+    test_logger = MetricLogger(['iter', evaluation_metric], ['%d', '%.4f'])
 
     # define the loss function
     loss_fn = get_loss(loss)
+
+    # get the evauation metric
+    evaluation_fn = get_loss(evaluation_metric)
 
     # embeddings
     embeddings = nn.Embedding(
@@ -177,27 +184,49 @@ def main(netpath,
     feat = embeddings.weight
     nn.init.xavier_uniform_(feat)
     with tqdm.trange(epochs) as pbar:
-        postfix_dict = OrderedDict({'loss': 'nan', 'val-loss': 'nan'})
+        postfix_dict = OrderedDict({'loss': 'nan', f'val-{evaluation_metric}': 'nan'})
         for epoch in pbar:
+            epoch_start = time.time()
             net.train()
             predictions = net(data.enc_graph, feat)
             predictions = predictions[training_mask].squeeze()
             # total scores
-            loss = loss_fn(predictions.squeeze(), training_labels)
+            loss_value = loss_fn(predictions.squeeze(), training_labels)
             opt.zero_grad()
-            loss.backward()
+            loss_value.backward()
             nn.utils.clip_grad_norm_(net.parameters(), 1)
             opt.step()
-            postfix_dict['loss'] = '%.03f' % loss.item()
+            postfix_dict['loss'] = '%.03f' % loss_value.item()
             pbar.set_postfix(postfix_dict)
-
+            
             if epoch % training_log_interval == 0:
-                training_loss_logger.log(iter=epoch,rmse=loss.item()) 
+                # compute the evaluation metric
+                metric_value = evaluate(net,
+                                        evaluation_fn,
+                                        data.enc_graph,
+                                        feat,
+                                        training_labels,
+                                        training_mask)
+                
+                training_logger.log(**{
+                    'iter': epoch,
+                    'time': (epoch_start - time.time()),
+                    loss: loss_value,
+                    evaluation_metric: metric_value})
             
             if epoch % validation_interval == 0:
-                validation_loss = evaluate(net, loss_fn, data.enc_graph, feat, validation_labels, validation_mask)
-                validation_loss_logger.log(iter=epoch, rmse=validation_loss) 
-                postfix_dict['val-loss'] = '%.03f' % validation_loss
+                metric_value = evaluate(net,
+                                        evaluation_fn,
+                                        data.enc_graph,
+                                        feat,
+                                        validation_labels,
+                                        validation_mask)
+                
+                validation_logger.log(**{
+                    'iter': epoch,
+                    evaluation_metric: metric_value})
+
+                postfix_dict[f'val-{evaluation_metric}'] = '%.03f' % metric_value
                 pbar.set_postfix(postfix_dict)
 
     # persist results
@@ -207,6 +236,8 @@ def main(netpath,
         pm.hash(("infgraph", os.path.basename(netpath)),
                 ("cascade", os.path.basename(cascade_path)), 
                 ("epochs", epochs),
+                ("loss", loss),
+                ("learning_rate", learning_rate),
                 ("encoder_units", encoder_units),
                 ("encoder_agg_acc", encoder_agg_act),
                 ("encoder_out_act",encoder_out_act),
@@ -218,8 +249,8 @@ def main(netpath,
                 ("cascade_randomness", cascade_randomness))
 
 
-        training_loss_logger_df = training_loss_logger.close()
-        validation_loss_logger_df = validation_loss_logger.close()
+        training_loss_logger_df = training_logger.close()
+        validation_loss_logger_df = validation_logger.close()
 
         pm.persist(
             ("target_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(target_graph), f), "wb"),

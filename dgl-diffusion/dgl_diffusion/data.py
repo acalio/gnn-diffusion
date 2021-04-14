@@ -221,7 +221,6 @@ class CascadeDataset:
 
         _ = [batch_append(u, v, w) for u in coordinates_dict for v,
              w in coordinates_dict[u].items()]
-        print(edges)
         # create the graph
         graph = edges_to_dgl(src, dst, weights)
 

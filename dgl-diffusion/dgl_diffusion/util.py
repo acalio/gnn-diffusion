@@ -321,6 +321,7 @@ class MetricLogger:
     """
     def __init__(self, attr_names, attr_formats):
         self._attr_format_dict = OrderedDict(zip(attr_names, attr_formats))
+        print(self._attr_format_dict)
         self._data = []
 
 

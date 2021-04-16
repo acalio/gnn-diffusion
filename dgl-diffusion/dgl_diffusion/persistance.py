@@ -48,14 +48,14 @@ class PManager:
 
         if self.tree_generated:
             raise ValueError
-        
+
         for v in value:
             if isinstance(v, tuple):
                 v_name, v_str = map(str, v)
                 self.hashed_values.append((v_name, v_str))
             else:
                 v_str = str(v)
-            self.h.update(b"{v_str}")
+            self.h.update(v_str.encode('utf-8'))
 
     def hex(self):
         return self.h.hexdigest()

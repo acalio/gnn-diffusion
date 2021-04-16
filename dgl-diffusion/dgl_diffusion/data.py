@@ -395,11 +395,7 @@ class CascadeDatasetBuilder:
             nx_enc_graph = nx.read_weighted_edgelist(self._enc_graph_path,
                                                      create_using=nx.DiGraph(), 
                                                      nodetype=int)
-            
-            # enc_graph = dgl.from_networkx(nx_enc_graph, edge_attrs=["weight"])
-            # enc_graph.edata['w'] = enc_graph.edata['weight']
-            
-            # del enc_graph.edata['weight']
+                
             enc_graph = nx_to_dgl(nx_enc_graph)
 
         else:
@@ -409,12 +405,8 @@ class CascadeDatasetBuilder:
         nx_inf_graph = nx.read_weighted_edgelist(self._graph_path,
                                                  create_using=nx.DiGraph(),
                                                  nodetype=int)
-        
         inf_graph = nx_to_dgl(nx_inf_graph)
-        # inf_graph = dgl.from_networkx(nx_inf_graph, edge_attrs=["weight"])
-        # inf_graph.edata['w'] = inf_graph.edata['weight']
-        # del inf_graph.edata['weight']
-
+        
         d.enc_graph = enc_graph
         d.inf_graph = inf_graph
 

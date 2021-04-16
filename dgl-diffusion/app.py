@@ -51,7 +51,7 @@ class ListParser(click.Option):
 @click.option("--training-log-interval", type=int, default=3)
 @click.option("--data-repo", type=click.Path(), default=None)
 @click.option("--results-repo", type=click.Path(), default=None)
-@click.option("--force", type=bool, default=False)
+@click.option("--force/--no-force", type=bool, default=False)
 @click.option("--normalize-weights/--no-normalize-weights", default=False)
 @click.option("--evaluation-metric", type=click.Choice(["mse", "mae"]), default="mse")
 def main(netpath,

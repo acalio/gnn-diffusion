@@ -71,8 +71,10 @@ class InfluenceGraphConv(nn.Module):
             feat = feat @ weight
 
             graph.srcdata['h'] = feat
-            graph.update_all(fn.u_mul_e('h', 'w', 'm'),
+            graph.update_all(fn.src_mul_edge('h', 'w', 'm'),
                              fn.sum(msg='m', out='h'))
+
+
             rst = graph.dstdata['h']
 
             return rst

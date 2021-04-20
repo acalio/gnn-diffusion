@@ -32,7 +32,7 @@ class ListParser(click.Option):
 @click.option('--epochs', '-e', type=int, default=100)
 @click.option('--optimizer', '-o', type=click.Choice(["adam", "sgd"]), default="adam")
 @click.option('--learning-rate', '-lr', type=float, default=0.001)
-@click.option("--loss", '-l', type=click.Choice(["mse", "mae", "huber", "lgcos"]), default="mse")
+@click.option("--loss", '-l', type=click.Choice(["mse", "mae", "huber", "lgcos", "kl"]), default="mse")
 @click.option("--device", type=int, default=-1)
 @click.option("--encoder-units", cls=ListParser, required=True)
 @click.option("--encoder-agg-act", type=str, required=True)
@@ -144,10 +144,11 @@ def main(netpath, cascade_path, epochs,
     test_mask[edge_permutation[training_size+validation_size:]] = True
 
     # save into the graph
+    training_mask = target_graph.edata['w']>0 # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!1
     data.enc_graph.edata['train_mask'] = training_mask
     data.enc_graph.edata['val_mask'] = validation_mask
     data.enc_graph.edata['test_mask'] = test_mask
-
+    
     # save into the target graph
     training_labels = target_graph.edata['w'][training_mask]
     validation_labels = target_graph.edata['w'][validation_mask]
@@ -222,7 +223,17 @@ def main(netpath, cascade_path, epochs,
     net.eval()
     with th.no_grad():
        pred = net(data.enc_graph, feat).squeeze()
-       print(f"{pred[:10]}\n{data.enc_graph.edata['w'][:10]}")
+       pos_edge_mask = target_graph.edata['w']>0
+       pos_edges = (data.enc_graph.edata['w'][pos_edge_mask],target_graph.edata['w'][pos_edge_mask])
+       neg_edges = (data.enc_graph.edata['w'][~pos_edge_mask],target_graph.edata['w'][~pos_edge_mask])
+       
+       print("Sample predictions on positive edges")
+       print(f"{pos_edges[0][:30]}\n{pos_edges[1][:30]}") 
+       print(f"\tAccuracy: {evaluation_fn(pos_edges[0], pos_edges[1])}")
+       print("Sample predictions on negative edges")
+       print(f"\tAccuracy: {evaluation_fn(neg_edges[0], neg_edges[1])}")
+       print(f"{neg_edges[0][:30]}\n{neg_edges[1][:30]}") 
+
 
 
     # persist results

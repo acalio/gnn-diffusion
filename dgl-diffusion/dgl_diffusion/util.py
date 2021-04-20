@@ -146,7 +146,19 @@ def get_loss(loss, reduction):
         def __call__(self, pred, labels):
             
             return self.reduction(th.log(th.cosh(pred - labels)))
-        
+
+    class KL:
+        def __init__(self, reduction):
+            self.reduction = {
+                "sum": th.sum,
+                "mean": th.mean
+            }[reduction]
+
+        def __call__(self, pred, labels):
+            mask = (pred > 0) & (labels > 0)
+            return self.reduction(th.pow(pred[~mask] - labels[~mask], 3)) +\
+                self.reduction(pred[mask]*(th.log(pred[mask])-th.log(labels[mask])))
+                
     if isinstance(loss, str):
         try:
             loss_fn = {
@@ -154,6 +166,7 @@ def get_loss(loss, reduction):
                 "mae": nn.L1Loss,
                 "huber":nn.SmoothL1Loss,
                 "lgcos": LogCosh,
+                "kl": KL
             }[loss](reduction=reduction)
             return loss_fn
         except KeyError:

@@ -125,7 +125,7 @@ def get_activation(act, **kwargs):
         return act
 
 
-def get_loss(loss):
+def get_loss(loss, reduction):
     """Get the loss function
 
     Parameters
@@ -137,8 +137,15 @@ def get_loss(loss):
     ret: callable function
     """
     class LogCosh:
+        def __init__(self, reduction):
+            self.reduction = {
+                "sum": th.sum,
+                "mean": th.mean
+            }[reduction]
+
         def __call__(self, pred, labels):
-            return th.sum(th.log(th.cosh(pred - labels)))
+            
+            return self.reduction(th.log(th.cosh(pred - labels)))
         
     if isinstance(loss, str):
         try:
@@ -147,7 +154,7 @@ def get_loss(loss):
                 "mae": nn.L1Loss,
                 "huber":nn.SmoothL1Loss,
                 "lgcos": LogCosh,
-            }[loss]()
+            }[loss](reduction=reduction)
             return loss_fn
         except KeyError:
             raise NotImplementedError

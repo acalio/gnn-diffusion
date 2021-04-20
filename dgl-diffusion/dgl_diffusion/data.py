@@ -9,6 +9,8 @@ import networkx as nx
 from functools import reduce
 from collections import deque
 from copy import copy
+from numpy.random import choice
+from operator import itemgetter
 
 
 class CascadeDataset:
@@ -189,7 +191,7 @@ class CascadeDataset:
         def compute_norm(d): return {v: norm(l) for v, l in d.items()}
         return {u: compute_norm(udict) for u, udict in coordinates_dict.items()}
 
-    def get_graph(self, coordinates_dict, normalize=False):
+    def get_graph(self, coordinates_dict, normalize=True):
         """ Create a DGL graph from the coordinates
         dictionary.
 
@@ -225,18 +227,16 @@ class CascadeDataset:
         graph = edges_to_dgl(src, dst, weights)
 
         if normalize:
-            in_degrees = graph.in_degrees()
-
             def normalize_weights(v):
                 v_in_edges = graph.in_edges(v, "eid")
                 graph.edata['w'][v_in_edges] = graph.edata['w'][v_in_edges]\
-                  .sum()/in_degrees[v]
+                    / graph.edata['w'][v_in_edges].sum()
 
             _ = [normalize_weights(v.item()) for v in graph.nodes()]
 
         return graph
 
-    def get_target_graph(self):
+    def get_target_graph(self, positive_negative_edges_ratio = 1):
         """ Create the target graph by combining the
         enc_graph and dec_graph.
 
@@ -245,9 +245,19 @@ class CascadeDataset:
           w_{uv} = w_{uv}^{dec_graph}  if (u,v) in self.dec_graph
           w_{uv} = 0 if (u,v) not in self.dec_graph
 
+        The above rule is likely to produce a target graph 
+        with a large number of negative edges. 
+        For this reason we bound the ratio of negative edges.
+
+        If negative_edges_ration is 1, the target graph has
+        the same number of positive and negative edges
+
         Returns
         -------
-        neg_graph : dgl.Graph
+        target_graph : dgl.Graph
+
+        positive_negative_edges_ratio: float, default 1
+          number of negative edge for each positive edge.
         """
         src, dst, weights = edges = [], [], []
 
@@ -256,19 +266,53 @@ class CascadeDataset:
             edges[1].append(v)
             edges[2].append(w)
 
-        src_tensor, dst_tensor = self.enc_graph.edges()
-        neg_edge_cnt = 0
-        for u, v in zip(src_tensor, dst_tensor):
+        src_tensor, dst_tensor, eid_tensor = self.enc_graph.edges(form="all")
+        # id of each negative edge
+        neg_eid = []
+        for u, v, eid in zip(src_tensor, dst_tensor, eid_tensor):
             # check if we need to add more edges
             try:
                 eid = self.dec_graph.edge_ids(u, v)
                 w = self.dec_graph.edata['w'][eid].item()
             except dgl.DGLError:
                 w = 0
-                neg_edge_cnt += 1
-
+                neg_eid.append((eid.item(), len(src)))
             batch_append(u, v, w)
 
+        # get the number of negative and positive edges
+        num_negative_edges = len(neg_eid)
+        num_positive_edges = len(src)-num_negative_edges
+        # compute the final number of negative edges
+        num_required_negative_edges = num_positive_edges*positive_negative_edges_ratio
+        print(f"Required negative edges:{num_required_negative_edges}")
+        print(f"\tPositive edges: {num_positive_edges}\n\tRatio:{num_positive_edges/num_negative_edges}")
+        if (delta:=num_negative_edges-num_required_negative_edges) != 0:
+            if delta>0: 
+                # remove negative edges in random order
+                # get the number of edges to be removed
+                to_remove_eid = [neg_eid[i] for i in
+                                 choice(len(neg_eid), size=int(delta), replace=False)]
+                # sort the edges in decreasing order to facilitate their removal
+                to_remove_eid = sorted(to_remove_eid, key=itemgetter(1), reverse=True)
+
+                # remove from the encoded graph
+                self._enc_graph.remove_edges([eid for eid, _ in to_remove_eid])                    
+
+                # remove from the target graph
+                def remove_edge(eid):
+                    del edges[0][eid]
+                    del edges[1][eid]
+                    del edges[2][eid]
+
+                _ = [remove_edge(eid) for _, eid in to_remove_eid]
+                print("="*20)
+                pos_edges = len(src) - (len(neg_eid) - len(to_remove_eid))
+                neg_edge = len(neg_eid) - len(to_remove_eid)
+                print(f"Ratio:{pos_edges/neg_edge}")
+            else:
+                # add new edges
+                pass
+            
         return edges_to_dgl(src, dst, weights)
 
 class CascadeDatasetBuilder:
@@ -347,14 +391,6 @@ class CascadeDatasetBuilder:
         self.cascade_randonness = cascade_randomness
 
     @property
-    def save_cascade(self):
-        return self._save_cascade
-
-    @save_cascade.setter
-    def save_cascade(self, save_cascade):
-        self._save_cascade = save_cascade
-
-    @property
     def edge_weights_normalization(self):
         return self._edge_weights_normalization
 
@@ -368,27 +404,18 @@ class CascadeDatasetBuilder:
         # load/create the encoded graph            
         if self._cascade_path:
             _, cascade_format = splitext(self._cascade_path)
-            if cascade_format == ".pickle":
-                # load from pickle
-                with open(self._cascade_path, 'rb') as f:
-                    cascades = pickle.load(f)
+            strategy_fn = {
+                'counting': d.counting_weight,
+                'tempdiff': d.tempdiff_weight
+            }[self._strategy]
 
-            else:
-                strategy_fn = {
-                    'counting': d.counting_weight,
-                    'tempdiff': d.tempdiff_weight
-                }[self._strategy]
+            cascades = load_cascades(self.cascade_path,
+                                     max_cascade=self._max_cascade,
+                                     randomness=self._cascade_randomness)
 
-                cascades = load_cascades(self.cascade_path,
-                                         max_cascade=self._max_cascade,
-                                         randomness=self._cascade_randomness)
+            coordinates_dict = strategy_fn(cascades, **kwargs)
+            enc_graph = d.get_graph(coordinates_dict, self._edge_weights_normalization)
 
-                coordinates_dict = strategy_fn(cascades, **kwargs)
-                enc_graph = d.get_graph(coordinates_dict, self._edge_weights_normalization)
-                if self._save_cascade:
-                    # save the cascade
-                    with open(self._save_cascade) as f:
-                        pickle.dump(cascades, f)
 
         elif self._enc_graph_path:
             # the encoded graph is provided in edgelist format

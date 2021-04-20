@@ -75,7 +75,7 @@ class InfluenceGraphConv(nn.Module):
                              fn.sum(msg='m', out='h'))
             rst = graph.dstdata['h']
 
-        return rst
+            return rst
 
 
 class InfluenceEncoder(nn.Module):
@@ -165,6 +165,7 @@ class InfluenceDecoder(nn.Module):
     def __init__(self, seq_dict):
         super(InfluenceDecoder, self).__init__()
         self.decoder = nn.Sequential(seq_dict)
+        
 
     def forward(self, graph, feat):
         """Forward function
@@ -192,7 +193,6 @@ class InfluenceDecoder(nn.Module):
     def concat_message_fn(self, edges):
         return {'cat_h': th.cat([edges.src['h'],
                                  edges.dst['h']], 1)}
-
 
 class InfEncDec(nn.Module):
     def __init__(self, encoder, decoder,  device="cpu"):

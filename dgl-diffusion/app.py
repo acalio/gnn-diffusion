@@ -17,6 +17,7 @@ from numpy.random import permutation
 from collections import OrderedDict
 import dgl
 import networkx as nx
+import itertools
 
 class ListParser(click.Option):
     def type_cast_value(self, ctx, value):
@@ -52,35 +53,22 @@ class ListParser(click.Option):
 @click.option("--data-repo", type=click.Path(), default=None)
 @click.option("--results-repo", type=click.Path(), default=None)
 @click.option("--force/--no-force", type=bool, default=False)
-@click.option("--normalize-weights/--no-normalize-weights", default=False)
+@click.option("--normalize-weights/--no-normalize-weights", default=True)
 @click.option("--evaluation-metric", type=click.Choice(["mse", "mae"]), default="mse")
-def main(netpath,
-         cascade_path,
-         epochs,
-         optimizer,
-         learning_rate,
-         loss,
-         device,
-         encoder_units,
-         encoder_agg_act,
-         encoder_out_act,
-         encoder_weight,
-         decoder_units,
-         decoder_act,
-         cascade_strategy,
-         cascade_time_window,
-         test_size,
-         validation_size,
-         validation_interval,
-         max_cascade,
-         cascade_randomness,
-         save_cascade,
-         training_log_interval,
-         data_repo,
-         results_repo,
-         force,
-         normalize_weights,
-         evaluation_metric):
+@click.option("--negative-edge-ratio", type=float, default=1.0)
+@click.option("--loss-reduction", type=click.Choice(["sum", "mean"]), default="mean")
+@click.option("--evaluation-metric-reduction", type=click.Choice(["sum", "mean"]), default="mean")
+@click.option("--clip-at", type=float, default=1.0)
+def main(netpath, cascade_path, epochs,
+         optimizer,learning_rate, loss,
+         device, encoder_units, encoder_agg_act,
+         encoder_out_act, encoder_weight, decoder_units,
+         decoder_act, cascade_strategy, cascade_time_window,
+         test_size, validation_size, validation_interval,
+         max_cascade, cascade_randomness, save_cascade,
+         training_log_interval, data_repo, results_repo,
+         force, normalize_weights, evaluation_metric,
+         negative_edge_ratio, loss_reduction, evaluation_metric_reduction, clip_at):
 
     # create the encoder
     encoder = InfluenceEncoder(
@@ -107,6 +95,7 @@ def main(netpath,
                      ("cascade",os.path.basename(cascade_path)),
                      ("cascade_strategy",cascade_strategy),
                      ("cascade_time_window",cascade_time_window),
+                     ("normalize_weights", normalize_weights),
                      ("max_cascade", max_cascade))
 
         # check if the folder for the given
@@ -129,11 +118,8 @@ def main(netpath,
 
     data = builder.build(**load_kws)
     
-    # initialize the optimizer
-    opt = get_optimizer(optimizer)(net.parameters(), lr=learning_rate)
-
     # contruct the target graph with negatie links
-    target_graph = data.get_target_graph()
+    target_graph = data.get_target_graph(positive_negative_edges_ratio=negative_edge_ratio)
 
     # split into training, validation and test set
     # check if the split sizes are correct
@@ -173,16 +159,21 @@ def main(netpath,
     test_logger = MetricLogger(['iter', evaluation_metric], ['%d', '%.4f'])
 
     # define the loss function
-    loss_fn = get_loss(loss)
+    loss_fn = get_loss(loss, loss_reduction)
 
     # get the evauation metric
-    evaluation_fn = get_loss(evaluation_metric)
+    evaluation_fn = get_loss(evaluation_metric, evaluation_metric_reduction)
 
     # embeddings
     embeddings = nn.Embedding(
         data.enc_graph.number_of_nodes(), encoder_units[0])
     feat = embeddings.weight
     nn.init.xavier_uniform_(feat)
+
+    # initialize the optimizer
+    opt = get_optimizer(optimizer)\
+        (itertools.chain(net.parameters(), embeddings.parameters()), lr=learning_rate)
+    
     with tqdm.trange(epochs) as pbar:
         postfix_dict = OrderedDict({'loss': 'nan', f'val-{evaluation_metric}': 'nan'})
         for epoch in pbar:
@@ -191,14 +182,13 @@ def main(netpath,
             predictions = net(data.enc_graph, feat)
             predictions = predictions[training_mask].squeeze()
             # total scores
-            loss_value = loss_fn(predictions.squeeze(), training_labels)
+            loss_value = loss_fn(predictions, training_labels)
             opt.zero_grad()
             loss_value.backward()
-            nn.utils.clip_grad_norm_(net.parameters(), 1)
+            nn.utils.clip_grad_norm_(itertools.chain(net.parameters(), embeddings.parameters()), clip_at) 
             opt.step()
             postfix_dict['loss'] = '%.03f' % loss_value.item()
             pbar.set_postfix(postfix_dict)
-            
             if epoch % training_log_interval == 0:
                 # compute the evaluation metric
                 metric_value = evaluate(net,
@@ -207,7 +197,6 @@ def main(netpath,
                                         feat,
                                         training_labels,
                                         training_mask)
-                
                 training_logger.log(**{
                     'iter': epoch,
                     'time': (epoch_start - time.time()),
@@ -229,6 +218,13 @@ def main(netpath,
                 postfix_dict[f'val-{evaluation_metric}'] = '%.03f' % metric_value
                 pbar.set_postfix(postfix_dict)
 
+    # compute some prediction
+    net.eval()
+    with th.no_grad():
+       pred = net(data.enc_graph, feat).squeeze()
+       print(f"{pred[:10]}\n{data.enc_graph.edata['w'][:10]}")
+
+
     # persist results
     if results_repo:
         pm = PManager(results_repo, force)
@@ -245,6 +241,7 @@ def main(netpath,
                 ("decoder_act", decoder_act),
                 ("cascade_strategy",  cascade_strategy),
                 ("cascade_time_window",cascade_time_window),
+                ("normalize_weights", normalize_weights),
                 ("max_cascade", max_cascade),
                 ("cascade_randomness", cascade_randomness))
 

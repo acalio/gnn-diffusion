@@ -11,7 +11,7 @@ from dgl_diffusion.data import CascadeDatasetBuilder
 from dgl_diffusion.model import InfluenceDecoder, InfluenceEncoder, InfEncDec
 import torch as th
 import torch.nn as nn
-from dgl_diffusion.util import get_optimizer, get_loss, get_architecture, construct_negative_graph, evaluate, MetricLogger, dgl_to_nx
+from dgl_diffusion.util import get_optimizer, get_loss, get_architecture, construct_negative_graph, evaluate, MetricLogger, dgl_to_nx, train_val_test_split
 from dgl_diffusion.persistance import PManager
 from numpy.random import permutation
 from collections import OrderedDict
@@ -55,10 +55,11 @@ class ListParser(click.Option):
 @click.option("--force/--no-force", type=bool, default=False)
 @click.option("--normalize-weights/--no-normalize-weights", default=True)
 @click.option("--evaluation-metric", type=click.Choice(["mse", "mae"]), default="mse")
-@click.option("--negative-edge-ratio", type=float, default=1.0)
+@click.option("--negative-positive-ratio", type=float, default=None) 
 @click.option("--loss-reduction", type=click.Choice(["sum", "mean"]), default="mean")
 @click.option("--evaluation-metric-reduction", type=click.Choice(["sum", "mean"]), default="mean")
 @click.option("--clip-at", type=float, default=1.0)
+@click.option("--weighted-errors/--no-weighted-errors", type=bool, default=False)
 def main(netpath, cascade_path, epochs,
          optimizer,learning_rate, loss,
          device, encoder_units, encoder_agg_act,
@@ -68,7 +69,11 @@ def main(netpath, cascade_path, epochs,
          max_cascade, cascade_randomness, save_cascade,
          training_log_interval, data_repo, results_repo,
          force, normalize_weights, evaluation_metric,
-         negative_edge_ratio, loss_reduction, evaluation_metric_reduction, clip_at):
+         negative_positive_ratio,
+         loss_reduction,
+         evaluation_metric_reduction,
+         clip_at,
+         weighted_errors):
 
     # create the encoder
     encoder = InfluenceEncoder(
@@ -119,7 +124,7 @@ def main(netpath, cascade_path, epochs,
     data = builder.build(**load_kws)
     
     # contruct the target graph with negatie links
-    target_graph = data.get_target_graph(positive_negative_edges_ratio=negative_edge_ratio)
+    target_graph = data.get_target_graph(negative_positive_ratio = negative_positive_ratio)
 
     # split into training, validation and test set
     # check if the split sizes are correct
@@ -128,23 +133,9 @@ def main(netpath, cascade_path, epochs,
               "and test size mustbe at most 1\033[0m'")
         sys.exit(-1)
 
-    edge_permutation = permutation(data.enc_graph.edges("eid"))
-    edges = data.enc_graph.number_of_edges()
-    training_size = int((1 - validation_size - test_size)*edges)
-    validation_size = int(validation_size * edges)
-
-    # create the mask
-    training_mask = th.zeros(edge_permutation.shape, dtype=th.bool)
-    training_mask[edge_permutation[:training_size]] = True
-
-    validation_mask = th.zeros_like(training_mask, dtype=th.bool)
-    validation_mask[edge_permutation[training_size:training_size+validation_size]] = True
-
-    test_mask = th.zeros_like(training_mask, dtype=th.bool)
-    test_mask[edge_permutation[training_size+validation_size:]] = True
-
-    # save into the graph
-    training_mask = target_graph.edata['w']>0 # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!1
+    training_mask, validation_mask, test_mask = train_val_test_split(target_graph.edata,
+                                                                     (1-validation_size-test_size, validation_size, test_size)) 
+    # save the masks into the graph
     data.enc_graph.edata['train_mask'] = training_mask
     data.enc_graph.edata['val_mask'] = validation_mask
     data.enc_graph.edata['test_mask'] = test_mask
@@ -160,6 +151,18 @@ def main(netpath, cascade_path, epochs,
     test_logger = MetricLogger(['iter', evaluation_metric], ['%d', '%.4f'])
 
     # define the loss function
+    weights = None
+    if weighted_errors:
+        # use a weighted loss function
+        # (cf. https://www.tensorflow.org/tutorials/structured_data/imbalanced_data)
+        # Scaling by total/2 helps keep the loss to a similar magnitude.
+        # The sum of the weights of all examples stays the same.
+        num_pos_edges = (target_graph.edata['w']>0).sum()
+        num_edges = target_graph.number_of_edges()
+        pos_weight = (1/num_pos_edges) * num_edges/2
+        neg_weight = (1/(num_edges-num_pos_edges)) * num_edges/2
+        weights = th.where(target_graph.edata['w']>0, pos_weight, neg_weight)
+        
     loss_fn = get_loss(loss, loss_reduction)
 
     # get the evauation metric
@@ -201,7 +204,7 @@ def main(netpath, cascade_path, epochs,
                 training_logger.log(**{
                     'iter': epoch,
                     'time': (epoch_start - time.time()),
-                    loss: loss_value,
+                    loss: loss_value.item(),
                     evaluation_metric: metric_value})
             
             if epoch % validation_interval == 0:
@@ -215,19 +218,30 @@ def main(netpath, cascade_path, epochs,
                 validation_logger.log(**{
                     'iter': epoch,
                     evaluation_metric: metric_value})
-
                 postfix_dict[f'val-{evaluation_metric}'] = '%.03f' % metric_value
                 pbar.set_postfix(postfix_dict)
+    
 
-    # compute some prediction
     net.eval()
+    # compute the performance on the test set
+    test_metric = evaluate(net,
+                           evaluation_fn,
+                           data.enc_graph,
+                           feat,
+                           test_labels,
+                           test_mask)
+
+    print(f"Test Set Accuracy:{test_metric}")
+    
+    # compute some prediction on training set
     with th.no_grad():
        pred = net(data.enc_graph, feat).squeeze()
        pos_edge_mask = target_graph.edata['w']>0
-       pos_edges = (data.enc_graph.edata['w'][pos_edge_mask],target_graph.edata['w'][pos_edge_mask])
-       neg_edges = (data.enc_graph.edata['w'][~pos_edge_mask],target_graph.edata['w'][~pos_edge_mask])
-       
+       pos_training_mask = th.logical_and(pos_edge_mask,training_mask)
+       pos_edges = (pred[pos_edge_mask], target_graph.edata['w'][pos_edge_mask])
+       neg_edges = (pred[~pos_edge_mask], target_graph.edata['w'][~pos_edge_mask])
        print("Sample predictions on positive edges")
+       print(f"{pos_edges[0].shape}")
        print(f"{pos_edges[0][:30]}\n{pos_edges[1][:30]}") 
        print(f"\tAccuracy: {evaluation_fn(pos_edges[0], pos_edges[1])}")
        print("Sample predictions on negative edges")

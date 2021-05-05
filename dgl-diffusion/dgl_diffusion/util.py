@@ -3,11 +3,24 @@ import pandas as pd
 import torch as th
 import torch.nn as nn
 import torch.optim as optim
-from numpy.random import rand
+from numpy.random import rand, permutation
 import csv
 import dgl
+import dgl_diffusion.loss as l
 
 def dgl_to_nx(dgl_graph):
+    """Convert a dgl graph
+    into the corresponding networkx graph
+    
+    Parameters
+    ---------
+    dgl_graph: dgl graph 
+      the graph to be converted
+
+    Returns
+    -------
+      a networkx graph
+    """
     nxg = dgl.to_networkx(dgl_graph, edge_attrs=['w'])
     # convert tensors to scalar values
     for _, _, ed in nxg.edges(data=True):
@@ -17,7 +30,18 @@ def dgl_to_nx(dgl_graph):
     return nxg
 
 def nx_to_dgl(nx_graph):
-    # convert the nx graph into a tuple of nodes tensors
+    """Convert a networkx graph 
+    into the corresponding dgl graph
+
+    Parameters
+    ----------
+    nx_graph: networkx graph
+      the graph to be converted
+    
+    Returns
+    -------
+      a dgl graph
+    """
     src, dst, weights = edges = [],[],[]
 
     def batch_append(s, t, w):
@@ -31,10 +55,108 @@ def nx_to_dgl(nx_graph):
     return edges_to_dgl(src, dst, weights)
 
 def edges_to_dgl(src, dst, weights):
+    """Create a dgl graph 
+    with the edges provided as input
+
+    The i-th edge of the resulting 
+    network is obtained by combining 
+    together (src[i], trg[i], weights[i])
+    
+
+    Parameters
+    ----------
+    src: list or tensor of int
+      node id of the source nodes
+
+    trg: list or tensor of int
+      node id of the target nodes
+
+    weights: list of int/float
+      weight of the edge
+    
+    Returns
+    -------
+      a dgl graph
+
+    """
     dgl_graph = dgl.graph((src, dst))
     dgl_graph.edata['w'] = th.tensor(weights, dtype=th.float)
     return dgl_graph
+
+
+def train_val_test_split(edge_data,
+                         segments_size = (.8, .1, .1),
+                         positive_edges_distribution = (.8, .1, .1)): 
+    """Create the training,validation,test mask.
+
+    The fractions specified in segments_size are 
+    computed with respect to the total size of the 
+    graphs, i.e., the number of positive edges plus the
+    number of negative edges
     
+    The fractions specified in the positive_edges_distribution
+    are with respect to the total number of positive edges.
+    Therefore, if positive_edge_distribution['training'] is 0.8,
+    it means that the training set gets the 80% of the number
+    of positive edges
+    
+
+    Parameters
+    ----------
+    edge_data: dict
+      data associated with the edge of the graph to be splitted
+    
+    segments_size: list-like of float
+      the size of each segment - in percentage wrt the 
+      total number of edges in the graph
+
+    positive_edges_distribution: list-like of float
+      fraction of the total positive edges to be 
+      included in the corresponding segment
+
+    Returns
+    -------
+    training_mask, validation_mask, test_mask: tensors of boolean 
+      the mask associated with teach segment of the data
+    """
+    positive_edges_mask = edge_data['w'] > 0
+    positive_edges_id,  = th.where(positive_edges_mask)
+    negative_edges_id,  = th.where(~positive_edges_mask)
+
+    # create a permutation of the positive edges
+    positive_edges_id = permutation(positive_edges_id)
+    negative_edges_id = permutation(negative_edges_id)
+
+    # compute the size of each segment
+    total_size, = edge_data['w'].shape
+    training_size, validation_size, test_size =\
+        map(lambda x: int(x*total_size), segments_size)
+    training_positive_size, validation_positive_size, test_positive_size =\
+        map(lambda x: int(x*positive_edges_id.shape[0]), positive_edges_distribution)
+     
+    # create the masks
+    training_mask = th.zeros(edge_data['w'].shape, dtype=th.bool)
+    validation_mask = th.zeros_like(training_mask, dtype=th.bool)
+    test_mask = th.zeros_like(training_mask, dtype=th.bool)
+
+    # distribute the positive edges among the different segments
+    training_mask[positive_edges_id[:training_positive_size]] = True
+    validation_mask[positive_edges_id[training_positive_size:
+                                      training_positive_size+validation_positive_size]] = True
+    test_mask[positive_edges_id[-test_positive_size:]] = True    
+    
+    # distribute the negative edges
+    training_negative_size = training_size-training_positive_size
+    validation_negative_size = validation_size-validation_positive_size
+    test_negative_size = test_size-validation_positive_size
+
+    training_mask[negative_edges_id[:training_negative_size]] = True
+    validation_mask[negative_edges_id[training_negative_size:
+                                      training_negative_size+validation_negative_size]] = True
+    test_mask[negative_edges_id[-test_negative_size:]] = True
+
+    return training_mask, validation_mask, test_mask
+
 def load_cascades(path, max_cascade = None, randomness=False):
     """Function for loading the cascades.
     The file is always read line by line.
@@ -136,37 +258,14 @@ def get_loss(loss, reduction):
     -------
     ret: callable function
     """
-    class LogCosh:
-        def __init__(self, reduction):
-            self.reduction = {
-                "sum": th.sum,
-                "mean": th.mean
-            }[reduction]
-
-        def __call__(self, pred, labels):
-            
-            return self.reduction(th.log(th.cosh(pred - labels)))
-
-    class KL:
-        def __init__(self, reduction):
-            self.reduction = {
-                "sum": th.sum,
-                "mean": th.mean
-            }[reduction]
-
-        def __call__(self, pred, labels):
-            mask = (pred > 0) & (labels > 0)
-            return self.reduction(th.pow(pred[~mask] - labels[~mask], 3)) +\
-                self.reduction(pred[mask]*(th.log(pred[mask])-th.log(labels[mask])))
-                
     if isinstance(loss, str):
         try:
             loss_fn = {
-                "mse": nn.MSELoss,
-                "mae": nn.L1Loss,
-                "huber":nn.SmoothL1Loss,
-                "lgcos": LogCosh,
-                "kl": KL
+                "mse": l.MSE,
+                "mae": l.MAE,
+                "huber":l.Huber,
+                "lgcos": l.LogCosh,
+                "kl": l.KL
             }[loss](reduction=reduction)
             return loss_fn
         except KeyError:

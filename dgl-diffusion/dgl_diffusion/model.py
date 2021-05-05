@@ -74,7 +74,6 @@ class InfluenceGraphConv(nn.Module):
             graph.update_all(fn.src_mul_edge('h', 'w', 'm'),
                              fn.sum(msg='m', out='h'))
 
-
             rst = graph.dstdata['h']
 
             return rst

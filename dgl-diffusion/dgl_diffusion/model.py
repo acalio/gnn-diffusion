@@ -201,7 +201,8 @@ class InfEncDec(nn.Module):
         self.encoder = encoder
         self.decoder = decoder
 
-    def forward(self, graph, feat):
-        out_feature = self.encoder(graph, feat)
-        prediction = self.decoder(graph, out_feature)
-        return prediction
+    def forward(self, graph, feat, inf_graph, neg_graph=None):
+        h = self.encoder(graph, feat)
+        return self.decoder(inf_graph, h), self.decoder(neg_graph, h) \
+            if neg_graph else self.decoder(inf_graph, h),
+

@@ -79,8 +79,10 @@ def edges_to_dgl(src, dst, weights):
       a dgl graph
 
     """
+    if not isinstance(weights, th.Tensor):
+        weights = th.tensor(weights, dtype=th.float)
     dgl_graph = dgl.graph((src, dst))
-    dgl_graph.edata['w'] = th.tensor(weights, dtype=th.float)
+    dgl_graph.edata['w'] = weights        
     return dgl_graph
 
 
@@ -156,6 +158,24 @@ def train_val_test_split(edge_data,
     test_mask[negative_edges_id[-test_negative_size:]] = True
 
     return training_mask, validation_mask, test_mask
+
+def train_val_test_split_(edge_ids,
+                         segments_size = (.8, .1, .1)):
+
+    edge_ids_permutation = permutation(edge_ids)
+    
+    edge_size, = edge_ids_permutation.shape
+
+    # compute the size of each segment
+    training_size, validation_size, test_size =\
+        map(lambda x: int(x*edge_size), segments_size)
+
+    #create the mask
+    training_ids = edge_ids_permutation[:training_size]
+    validation_ids = edge_ids_permutation[training_size:training_size+validation_size]
+    test_ids = edge_ids_permutation[-test_size:]
+    
+    return training_ids, validation_ids, test_ids
 
 def load_cascades(path, max_cascade = None, randomness=False):
     """Function for loading the cascades.
@@ -369,7 +389,7 @@ def get_architecture(units, activations):
 
 
 
-def evaluate(model, metric, graph, features, labels, mask):
+def evaluate(model, enc_graph, feat, dec_graph, labels, mask, metric):
     """Evaluate the performance of the model
 
     Parameters
@@ -377,20 +397,23 @@ def evaluate(model, metric, graph, features, labels, mask):
     model : th.Module
       model to be evaluated
 
-    metric : th.Module
-      loss function
-
-    graph : dgl graph
-      the graph
+    enc_graph : dgl graph
+      the encoded graph
 
     features : th.Tensor (N,d)
       nodes features
+
+    dec_graph : dgl graph
+      the decoded graph
 
     labels : th.Tensor (N,)
       ground truth - edge wise
 
     mask : th.Tensor (E,)
       boolean mask 
+
+    metric : th.Module
+      loss function
 
     Returns
     -------
@@ -400,7 +423,7 @@ def evaluate(model, metric, graph, features, labels, mask):
     model.eval()
     with th.no_grad():
         # comute predictionsl
-        pred = model(graph, features)
+        pred, _ = model(enc_graph, feat,  dec_graph)
         # apply the mask
         pred = pred[mask]
         # compute the loss function

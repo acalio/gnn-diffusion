@@ -11,7 +11,7 @@ from dgl_diffusion.data import CascadeDatasetBuilder
 from dgl_diffusion.model import InfluenceDecoder, InfluenceEncoder, InfEncDec
 import torch as th
 import torch.nn as nn
-from dgl_diffusion.util import get_optimizer, get_loss, get_architecture, construct_negative_graph, evaluate, MetricLogger, dgl_to_nx, train_val_test_split
+from dgl_diffusion.util import get_optimizer, get_loss, get_architecture, construct_negative_graph, evaluate, MetricLogger, dgl_to_nx, train_val_test_split_
 from dgl_diffusion.persistance import PManager
 from numpy.random import permutation
 from collections import OrderedDict
@@ -59,7 +59,6 @@ class ListParser(click.Option):
 @click.option("--loss-reduction", type=click.Choice(["sum", "mean"]), default="mean")
 @click.option("--evaluation-metric-reduction", type=click.Choice(["sum", "mean"]), default="mean")
 @click.option("--clip-at", type=float, default=1.0)
-@click.option("--weighted-errors/--no-weighted-errors", type=bool, default=False)
 def main(netpath, cascade_path, epochs,
          optimizer,learning_rate, loss,
          device, encoder_units, encoder_agg_act,
@@ -72,8 +71,8 @@ def main(netpath, cascade_path, epochs,
          negative_positive_ratio,
          loss_reduction,
          evaluation_metric_reduction,
-         clip_at,
-         weighted_errors):
+         clip_at):
+
 
     # create the encoder
     encoder = InfluenceEncoder(
@@ -124,7 +123,8 @@ def main(netpath, cascade_path, epochs,
     data = builder.build(**load_kws)
     
     # contruct the target graph with negatie links
-    target_graph = data.get_target_graph(negative_positive_ratio = negative_positive_ratio)
+    negative_graph = data.get_negative_graph(int(negative_positive_ratio)) # it must greater than 0
+    
 
     # split into training, validation and test set
     # check if the split sizes are correct
@@ -133,36 +133,35 @@ def main(netpath, cascade_path, epochs,
               "and test size mustbe at most 1\033[0m'")
         sys.exit(-1)
 
-    training_mask, validation_mask, test_mask = train_val_test_split(target_graph.edata,
-                                                                     (1-validation_size-test_size, validation_size, test_size)) 
-    # save the masks into the graph
-    data.enc_graph.edata['train_mask'] = training_mask
-    data.enc_graph.edata['val_mask'] = validation_mask
-    data.enc_graph.edata['test_mask'] = test_mask
-    
-    # save into the target graph
-    training_labels = target_graph.edata['w'][training_mask]
-    validation_labels = target_graph.edata['w'][validation_mask]
-    test_labels = target_graph.edata['w'][test_mask]
+    neg_training_ids, neg_validation_ids, neg_test_ids = train_val_test_split_(negative_graph.number_of_edges(),
+                                                                  (1-validation_size-test_size, validation_size, test_size))
+
+    pos_training_ids, pos_validation_ids, pos_test_ids = train_val_test_split_(data.dec_graph.number_of_edges(),
+                                                                  (1-validation_size-test_size, validation_size, test_size)) 
+    #prepare the labels
+    pos_labels = data.dec_graph.edata['w']
+    neg_labels = negative_graph.edata['w']
     
     # preare the logger
-    training_logger = MetricLogger(['iter', 'time',  loss, evaluation_metric], ['%d','%d', '%.4f', '%.4f'])
-    validation_logger = MetricLogger(['iter',  evaluation_metric], ['%d', '%.4f'])
-    test_logger = MetricLogger(['iter', evaluation_metric], ['%d', '%.4f'])
+    training_logger = MetricLogger(['iter', 'time', loss, evaluation_metric,
+                                    f'pos-{evaluation_metric}', f'neg-{evaluation_metric}' ],
+                                   ['%d', '%d', '%.4f', '%.4f', '%.4f', '%.4f'])
+    
+    validation_logger = MetricLogger(['iter',  evaluation_metric, f'pos-{evaluation_metric}', f'neg-{evaluation_metric}'],
+                                     ['%d', '%.4f', '%.4f', '%.4f'])
+    test_logger = MetricLogger(['iter', evaluation_metric, f'pos-{evaluation_metric}', f'neg-{evaluation_metric}'],
+                               ['%d', '%.4f', '%.4f','%.4f'])
+    
+
+    #create training/validation/test labels merging the positive and negative graphs
+    training_labels = th.cat([pos_labels[pos_training_ids],
+                              neg_labels[neg_training_ids]], 0)
+    validation_labels = th.cat([pos_labels[pos_validation_ids],
+                              neg_labels[neg_validation_ids]], 0)
+    test_labels = th.cat([pos_labels[pos_test_ids],
+                              neg_labels[neg_test_ids]], 0)
 
     # define the loss function
-    weights = None
-    if weighted_errors:
-        # use a weighted loss function
-        # (cf. https://www.tensorflow.org/tutorials/structured_data/imbalanced_data)
-        # Scaling by total/2 helps keep the loss to a similar magnitude.
-        # The sum of the weights of all examples stays the same.
-        num_pos_edges = (target_graph.edata['w']>0).sum()
-        num_edges = target_graph.number_of_edges()
-        pos_weight = (1/num_pos_edges) * num_edges/2
-        neg_weight = (1/(num_edges-num_pos_edges)) * num_edges/2
-        weights = th.where(target_graph.edata['w']>0, pos_weight, neg_weight)
-        
     loss_fn = get_loss(loss, loss_reduction)
 
     # get the evauation metric
@@ -177,14 +176,18 @@ def main(netpath, cascade_path, epochs,
     # initialize the optimizer
     opt = get_optimizer(optimizer)\
         (itertools.chain(net.parameters(), embeddings.parameters()), lr=learning_rate)
-    
     with tqdm.trange(epochs) as pbar:
         postfix_dict = OrderedDict({'loss': 'nan', f'val-{evaluation_metric}': 'nan'})
         for epoch in pbar:
             epoch_start = time.time()
             net.train()
-            predictions = net(data.enc_graph, feat)
-            predictions = predictions[training_mask].squeeze()
+            pos_predictions, neg_predictions = net(data.enc_graph, feat, data.dec_graph, negative_graph)
+
+            # concatenate the prediction
+            predictions = th.cat([pos_predictions[pos_training_ids],
+                                  neg_predictions[neg_training_ids]], 0)
+            
+            
             # total scores
             loss_value = loss_fn(predictions, training_labels)
             opt.zero_grad()
@@ -195,60 +198,97 @@ def main(netpath, cascade_path, epochs,
             pbar.set_postfix(postfix_dict)
             if epoch % training_log_interval == 0:
                 # compute the evaluation metric
-                metric_value = evaluate(net,
-                                        evaluation_fn,
-                                        data.enc_graph,
-                                        feat,
-                                        training_labels,
-                                        training_mask)
+                pos_metric_value = evaluate(net,
+                                            data.enc_graph,
+                                            feat,
+                                            data.dec_graph,
+                                            pos_labels[pos_training_ids],
+                                            pos_training_ids,
+                                            evaluation_fn)
+
+                neg_metric_value = evaluate(net,
+                                            data.enc_graph,
+                                            feat,
+                                            negative_graph,
+                                            neg_labels[neg_training_ids],
+                                            neg_training_ids,
+                                            evaluation_fn)
+                
                 training_logger.log(**{
                     'iter': epoch,
                     'time': (epoch_start - time.time()),
                     loss: loss_value.item(),
-                    evaluation_metric: metric_value})
-            
-            if epoch % validation_interval == 0:
-                metric_value = evaluate(net,
-                                        evaluation_fn,
-                                        data.enc_graph,
-                                        feat,
-                                        validation_labels,
-                                        validation_mask)
+                    evaluation_metric: .5* (pos_metric_value+neg_metric_value),
+                    f'pos-{evaluation_metric}': pos_metric_value,
+                    f'neg-{evaluation_metric}': neg_metric_value
+                })
                 
+
+            if epoch % validation_interval == 0:
+                pos_metric_value = evaluate(net,
+                                            data.enc_graph,
+                                            feat,
+                                            data.dec_graph,
+                                            pos_labels[pos_validation_ids],
+                                            pos_validation_ids,
+                                            evaluation_fn)
+                neg_metric_value = evaluate(net,
+                                            data.enc_graph,
+                                            feat,
+                                            negative_graph,
+                                            neg_labels[neg_validation_ids],
+                                            neg_validation_ids,
+                                            evaluation_fn)
+
+                metric_value = .5*(pos_metric_value+neg_metric_value)
                 validation_logger.log(**{
                     'iter': epoch,
-                    evaluation_metric: metric_value})
+                    evaluation_metric: metric_value,
+                    f'pos-{evaluation_metric}': pos_metric_value,
+                    f'neg-{evaluation_metric}': neg_metric_value
+                })
+                
                 postfix_dict[f'val-{evaluation_metric}'] = '%.03f' % metric_value
                 pbar.set_postfix(postfix_dict)
     
 
     net.eval()
     # compute the performance on the test set
-    test_metric = evaluate(net,
-                           evaluation_fn,
-                           data.enc_graph,
-                           feat,
-                           test_labels,
-                           test_mask)
+    pos_test_metric = evaluate(net,
+                               data.enc_graph,
+                               feat,
+                               data.dec_graph,
+                               pos_labels[pos_test_ids],
+                               pos_test_ids,
+                               evaluation_fn)
+    neg_test_metric = evaluate(net,
+                               data.enc_graph,
+                               feat,
+                               negative_graph,
+                               neg_labels[neg_test_ids],
+                               neg_test_ids,
+                               evaluation_fn)
 
-    print(f"Test Set Accuracy:{test_metric}")
     
-    # compute some prediction on training set
+    print(f"Test Set {evaluation_metric}:{.5*(pos_test_metric+neg_test_metric)}")
+    print(f"\t(Positive) Test Set {evaluation_metric}:{pos_test_metric}") 
+    print(f"\t (Negative) Test Set {evaluation_metric}:{neg_test_metric}") 
+
+    # compute some prediction on training set over the entire graph
     with th.no_grad():
-       pred = net(data.enc_graph, feat).squeeze()
-       pos_edge_mask = target_graph.edata['w']>0
-       pos_training_mask = th.logical_and(pos_edge_mask,training_mask)
-       pos_edges = (pred[pos_edge_mask], target_graph.edata['w'][pos_edge_mask])
-       neg_edges = (pred[~pos_edge_mask], target_graph.edata['w'][~pos_edge_mask])
-       print("Sample predictions on positive edges")
-       print(f"{pos_edges[0].shape}")
-       print(f"{pos_edges[0][:30]}\n{pos_edges[1][:30]}") 
-       print(f"\tAccuracy: {evaluation_fn(pos_edges[0], pos_edges[1])}")
-       print("Sample predictions on negative edges")
-       print(f"\tAccuracy: {evaluation_fn(neg_edges[0], neg_edges[1])}")
-       print(f"{neg_edges[0][:30]}\n{neg_edges[1][:30]}") 
-
-
+        pos_src, pos_dst, pos_eid = data.dec_graph.edges(form="all")
+        neg_src, neg_dst, neg_eid = negative_graph.edges(form="all")
+        # for i in  range(30):
+        #     print(pos_src[i].item(), pos_dst[i].item(), data.dec_graph.edata['w'][i].item())
+        #     print(neg_src[i].item(), neg_dst[i].item(), negative_graph.edata['w'][i].item())
+            
+        pos_pred = net.decoder(data.dec_graph, feat).squeeze()
+        # print(pos_pred[:30])
+        # print(data.dec_graph.edata['w'][:30])
+        print(f"{evaluation_metric}:{evaluation_fn(pos_pred, data.dec_graph.edata['w'])}")
+        neg_pred = net.decoder(negative_graph, feat).squeeze()
+        print(neg_pred[:30], neg_pred.min())
+        print(f"Accuracy:{evaluation_fn(neg_pred, negative_graph.edata['w'])}")       
 
     # persist results
     if results_repo:
@@ -273,9 +313,10 @@ def main(netpath, cascade_path, epochs,
 
         training_loss_logger_df = training_logger.close()
         validation_loss_logger_df = validation_logger.close()
+        
 
         pm.persist(
-            ("target_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(target_graph), f), "wb"),
+            # ("negative_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(negative_graph), f), "wb"),
             ("enc_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(data.enc_graph), f), "wb"),
             ("train_logger.csv", lambda f: training_loss_logger_df.to_csv(f, index=None ), "wb"),
             ("validation_logger.csv", lambda f: validation_loss_logger_df.to_csv(f, index=None ), "wb"))
@@ -284,7 +325,7 @@ def main(netpath, cascade_path, epochs,
     # save the encoded graph
     if data_pm:
         data_pm.persist(
-            ("target_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(target_graph), f), "wb"),
+            # ("target_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(target_graph), f), "wb"), 
             ("enc_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(data.enc_graph), f), "wb"))
         data_pm.close()
         

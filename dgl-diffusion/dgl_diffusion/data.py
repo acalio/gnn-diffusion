@@ -236,89 +236,37 @@ class CascadeDataset:
 
         return graph
 
-    def get_target_graph(self, negative_positive_ratio = None):
-        """ Create the target graph by combining the
-        enc_graph and dec_graph.
+    def get_negative_graph(self, k):
+        """Create a negative graph
+        starting from the decoded graph,
+        i.e., the influence graph.
 
-        More specifically, for every (u,v) in self.enc_graph,
+        The weight associated with every edge
+        is 0
 
-          w_{uv} = w_{uv}^{dec_graph}  if (u,v) in self.dec_graph
-          w_{uv} = 0 if (u,v) not in self.dec_graph
+        The algorithm might produce edges
+        that are actually 
 
-        The above rule is likely to produce a target graph 
-        with a large number of negative edges. 
-        For this reason we bound the ratio of negative edges.
 
-        If negative_positive_ratio is k, the target graph has
-        k negative edges for each positive one
+        Parameters
+        ----------
+        k: int
+          number of negative links for each positive one
 
         Returns
         -------
-        target_graph : dgl.Graph
-
-        positive_negative_ratio: float, default 1
-          number of negative edge for each positive edge.
+        dgl graph
+          the negative graph
         """
-        src, dst, weights = edges = [], [], []
-
-        def batch_append(u, v, w):
-            edges[0].append(u)
-            edges[1].append(v)
-            edges[2].append(w)
-
-        src_tensor, dst_tensor, eid_tensor = self.enc_graph.edges(form="all")
-        # id of each negative edge
-        neg_eid = []
-        for u, v, eid in zip(src_tensor, dst_tensor, eid_tensor):
-            # check if we need to add more edges
-            try:
-                eid = self.dec_graph.edge_ids(u, v)
-                w = self.dec_graph.edata['w'][eid].item()
-            except dgl.DGLError:
-                w = 0
-                neg_eid.append((eid.item(), len(src)))
-            batch_append(u, v, w)
-
-        # get the number of negative and positive edges
-        num_negative_edges = len(neg_eid)
-        num_positive_edges = len(src)-num_negative_edges
-        print(f"Positive edges: {num_positive_edges}")
-        print(f"Negative edges: {num_negative_edges}")
-        print(f"Ratio:{num_negative_edges/num_positive_edges}")        
-        # check if the negative/positive edge ratio is as required
-        if negative_positive_ratio:
-            # compute the desired number of negative edges
-            num_required_negative_edges = num_positive_edges*negative_positive_ratio
-
-            print(f"Required negative edges:{num_required_negative_edges}")
+        # TODO : try different sampling strategies
+        src, dst = self.dec_graph.edges()
+        # each source node is replicated k times
+        neg_src = src.repeat_interleave(k)
+        # create the destination tensor
+        neg_dst = th.randint(0, self.dec_graph.number_of_nodes(), (len(src)*k,))
         
-            if (delta:=num_negative_edges-num_required_negative_edges) != 0:
-                if delta>0: 
-                    # remove negative edges in random order
-                    # get the number of edges to be removed
-                    to_remove_eid = [neg_eid[i] for i in
-                                 choice(len(neg_eid), size=int(delta), replace=False)]
-                    # sort the edges in decreasing order to facilitate their removal
-                    to_remove_eid = sorted(to_remove_eid, key=itemgetter(1), reverse=True)
+        return edges_to_dgl(neg_src, neg_dst, th.zeros_like(neg_src))
 
-                    # remove from the encoded graph
-                    self._enc_graph.remove_edges([eid for eid, _ in to_remove_eid])                    
-                    
-                    # remove from the target graph
-                    def remove_edge(eid):
-                        del edges[0][eid]
-                        del edges[1][eid]
-                        del edges[2][eid]
-
-                    _ = [remove_edge(eid) for _, eid in to_remove_eid]
-                    print("="*20)
-                    pos_edges = len(src) - (len(neg_eid) - len(to_remove_eid))
-                    neg_edges = len(neg_eid) - len(to_remove_eid)
-                    print(f"Ratio:{neg_edges/pos_edges}")
-                else:
-                    # add new edges 
-                    pass
-        return edges_to_dgl(src, dst, weights)
 
 class CascadeDatasetBuilder:
     """Class responsible for 

@@ -170,9 +170,9 @@ def main(netpath, cascade_path, epochs,
     # embeddings
     embeddings = nn.Embedding(
         data.enc_graph.number_of_nodes(), encoder_units[0])
+    
     feat = embeddings.weight
     nn.init.xavier_uniform_(feat)
-
     # initialize the optimizer
     opt = get_optimizer(optimizer)\
         (itertools.chain(net.parameters(), embeddings.parameters()), lr=learning_rate)

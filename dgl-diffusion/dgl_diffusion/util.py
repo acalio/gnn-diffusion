@@ -316,35 +316,6 @@ def get_optimizer(opt):
         raise NotImplementedError
 
 
-def construct_negative_graph(graph, k):
-    """Construct a negative graph
-
-    It adds k negative edges for each
-    node in the graph
-
-    Parameters
-    ----------
-    graph : dgl graph
-      the graph
-
-    k : int
-      number of negative edges to add for each node
-
-    Returns
-    ------
-    dgl graph
-      graph with negative edges
-    """
-    src, dst = graph.edges()
-    # each source node is replicated k times
-    neg_src = src.repeat_interleave(k)
-    # drak k random samples for each edge
-    neg_dst = th.randint(0, graph.num_nodes(), (len(src)*k))
-
-    # neg_src and neg_dst contain the edges of the negative graph
-    return dgl.graph((neg_src, neg_dst), num_nodes=graph.num_nodes())
-
-
 def get_architecture(units, activations):
     """Get the layers sizes and
     the activation function and return
@@ -386,8 +357,6 @@ def get_architecture(units, activations):
                   "and activation functions\033[0m'")
 
     return seq_dict
-
-
 
 def evaluate(model, enc_graph, feat, dec_graph, labels, mask, metric):
     """Evaluate the performance of the model

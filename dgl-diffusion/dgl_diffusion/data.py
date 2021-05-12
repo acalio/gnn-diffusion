@@ -263,7 +263,7 @@ class CascadeDataset:
         # each source node is replicated k times
         neg_src = src.repeat_interleave(k)
         # create the destination tensor
-        neg_dst = th.randint(0, self.dec_graph.number_of_nodes(), (len(src)*k,))
+        neg_dst = th.randint(0, self.dec_graph.number_of_nodes(), (src.shape[0]*k,))
         
         return edges_to_dgl(neg_src, neg_dst, th.zeros_like(neg_src))
 

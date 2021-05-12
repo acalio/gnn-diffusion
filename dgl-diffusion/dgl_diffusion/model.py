@@ -61,16 +61,25 @@ class InfluenceGraphConv(nn.Module):
         rst : torch.Tensor
           output features
         """
+        if weight is None:
+            weight = self.weight
+
         with graph.local_scope():
             if isinstance(feat, tuple):
-                feat, _ = feat  # dst features are discarded
+                # dst features are discarded 
+                feat, _ = feat[0] @ weight
+            elif graph.is_block:
+                # mini-batch training
+                feat_src = feat @ weight
+                feat_dst = feat[:graph.number_of_dst_nodes()] @ weight
+            else:
+                # full graph training
+                feat = feat @ weight
+                feat_src = feat_dst = feat
 
-            if weight is None:
-                weight = self.weight
+            graph.srcdata['h'] = feat_src
+            graph.dstdata['h'] = feat_dst
 
-            feat = feat @ weight
-
-            graph.srcdata['h'] = feat
             graph.update_all(fn.src_mul_edge('h', 'w', 'm'),
                              fn.sum(msg='m', out='h'))
 
@@ -83,17 +92,31 @@ class InfluenceEncoder(nn.Module):
     """NN
     Attributes
     ----------
+    conv_layers : nn.ModuleList
+      list of convoulutional layers
+
+    out_layer : nn.Module
+      output layer 
+
+    agg_act : string or callable
+      activation function to  apply
+      on the node embeddings returned
+      by the convolution
+    
+    out_act : string or callable
+      activation function to apply
+      on the output layer
+
     Parameters
     ----------
-    in_units : int
-      size of input feature
+    units : list of int
+      number of units for each convolutional layer and
+      the output layer. More specifically, each pair 
+      at index (i, i+1) represents the input and output 
+      units of a convolutional layer, with the only
+      exception of the last pair (len(units)-2, len(units)-1)
+      which denotes the shape of the output layer
 
-    hid_units : int
-      size of hidden feature. The representation
-      provided by the convolution
-
-    out_units : int
-      size of output feature
     agg_act : callable, str, optional
       activation function for the output of the convolution
 
@@ -102,11 +125,14 @@ class InfluenceEncoder(nn.Module):
 
     device : str, optional
     """
-    def __init__(self, in_units, hid_units, out_units, agg_act, out_act, device='cpu'):
+    def __init__(self, units, agg_act, out_act, device='cpu'):
         super(InfluenceEncoder, self).__init__()
+        dimensions = [(e, units[i+1]) for i, e in enumerate(units[:-1])]
+        self.conv_layers = nn.ModuleList([
+            InfluenceGraphConv(*d) for d in dimensions[:-1]
+        ])
 
-        self.conv_layer = InfluenceGraphConv(in_units, hid_units)
-        self.out_layer = nn.Linear(hid_units, out_units)
+        self.out_layer = nn.Linear(*dimensions[-1])
 
         self.agg_act = get_activation(agg_act)
         self.out_act = get_activation(out_act)
@@ -125,9 +151,9 @@ class InfluenceEncoder(nn.Module):
 
         Parameters
         ----------
-        graph : dgl.Graph
+        graph : dgl.Graph or a list of graphs/blocks
           the graph
-        feat : torch.Tensor, optional
+        feat : torch.Tensor
           node features, if None use an identity matrix
 
         Returns
@@ -135,12 +161,18 @@ class InfluenceEncoder(nn.Module):
         torch.Tensor
           new node features
         """
+        
+        graphs = graph if isinstance(graph, list) else [graph]*len(self.conv_layers)
+
         # apply the convolution
-        feat = self.conv_layer(graph, feat)  # nodes x embedding size
-        # apply the non-linearity
-        feat = self.agg_act(feat)
+        for i, (layer, g) in enumerate(zip(self.conv_layers, graphs)):
+            feat = layer(g, feat)
+            if i < len(self.conv_layers) - 1:
+                feat = self.agg_act(feat)
+
         # apply the output layer and return
         return self.out_act(self.out_layer(feat))
+
 
 
 class InfluenceDecoder(nn.Module):
@@ -166,7 +198,6 @@ class InfluenceDecoder(nn.Module):
     def __init__(self, seq_dict):
         super(InfluenceDecoder, self).__init__()
         self.decoder = nn.Sequential(seq_dict)
-        
 
     def forward(self, graph, feat):
         """Forward function

@@ -389,8 +389,8 @@ class CascadeDatasetBuilder:
         
         d.enc_graph = enc_graph
         d.inf_graph = inf_graph
-
-        if (delta:=d.inf_graph.number_of_nodes() - d.enc_graph.number_of_nodes() > 0):
+        delta = d.inf_graph.number_of_nodes() - d.enc_graph.number_of_nodes()
+        if delta > 0:
             # the encoded graph has fewer nodes than the inf graph
             d.enc_graph.add_nodes(delta)
             

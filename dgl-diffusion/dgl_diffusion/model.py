@@ -39,6 +39,7 @@ class InfluenceGraphConv(nn.Module):
 
         self.reset_parameters()
 
+    
     def reset_parameters(self):
         """Initialize learnable parameters"""
         if self.weight is not None:
@@ -63,7 +64,7 @@ class InfluenceGraphConv(nn.Module):
         """
         if weight is None:
             weight = self.weight
-
+        
         with graph.local_scope():
             if isinstance(feat, tuple):
                 # dst features are discarded 
@@ -79,7 +80,6 @@ class InfluenceGraphConv(nn.Module):
 
             graph.srcdata['h'] = feat_src
             graph.dstdata['h'] = feat_dst
-
             graph.update_all(fn.src_mul_edge('h', 'w', 'm'),
                              fn.sum(msg='m', out='h'))
 
@@ -129,7 +129,7 @@ class InfluenceEncoder(nn.Module):
         super(InfluenceEncoder, self).__init__()
         dimensions = [(e, units[i+1]) for i, e in enumerate(units[:-1])]
         self.conv_layers = nn.ModuleList([
-            InfluenceGraphConv(*d) for d in dimensions[:-1]
+            InfluenceGraphConv(*d, device=device) for d in dimensions[:-1]
         ])
 
         self.out_layer = nn.Linear(*dimensions[-1])
@@ -195,9 +195,11 @@ class InfluenceDecoder(nn.Module):
 
     """
 
-    def __init__(self, seq_dict):
+    def __init__(self, seq_dict, device='cpu'):
         super(InfluenceDecoder, self).__init__()
         self.decoder = nn.Sequential(seq_dict)
+        self.device = th.device(device)
+        
 
     def forward(self, graph, feat):
         """Forward function
@@ -236,4 +238,5 @@ class InfEncDec(nn.Module):
         h = self.encoder(graph, feat)
         return self.decoder(inf_graph, h), self.decoder(neg_graph, h) \
             if neg_graph else self.decoder(inf_graph, h),
+        
 

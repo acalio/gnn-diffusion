@@ -8,6 +8,14 @@ import csv
 import dgl
 import dgl_diffusion.loss as l
 
+
+def maybe_to_cpu(model):
+    if model.device.type != 'cpu':
+        model.to('cpu')
+        model.device = th.device('cpu')
+        return True
+    return False
+
 def dgl_to_nx(dgl_graph):
     """Convert a dgl graph
     into the corresponding networkx graph
@@ -358,7 +366,7 @@ def get_architecture(units, activations):
 
     return seq_dict
 
-def evaluate(model, enc_graph, feat, dec_graph, labels, mask, metric):
+def evaluate(model, dec_graph, feat, labels, mask, metric):
     """Evaluate the performance of the model
 
     Parameters
@@ -366,20 +374,18 @@ def evaluate(model, enc_graph, feat, dec_graph, labels, mask, metric):
     model : th.Module
       model to be evaluated
 
-    enc_graph : dgl graph
-      the encoded graph
+    dec_graph : dgl graph
+      the decoded graph
 
     features : th.Tensor (N,d)
       nodes features
 
-    dec_graph : dgl graph
-      the decoded graph
-
     labels : th.Tensor (N,)
       ground truth - edge wise
 
-    mask : th.Tensor (E,)
-      boolean mask 
+    mask : boolean tensor of shape (E,) or long tensor
+      mask that filters the entries upon which the metric
+      provided as input is evaluated
 
     metric : th.Module
       loss function
@@ -392,12 +398,13 @@ def evaluate(model, enc_graph, feat, dec_graph, labels, mask, metric):
     model.eval()
     with th.no_grad():
         # comute predictionsl
-        pred, _ = model(enc_graph, feat,  dec_graph)
+        pred = model(dec_graph, feat)
         # apply the mask
         pred = pred[mask]
         # compute the loss function
         loss_value = metric(pred.squeeze(), labels)
-        return loss_value.item()
+
+    return loss_value.item()
 
 
 

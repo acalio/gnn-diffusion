@@ -1,5 +1,5 @@
 from os.path import splitext, basename
-from dgl_diffusion.util import load_cascades, nx_to_dgl, edges_to_dgl
+from dgl_diffusion.util import load_cascades, nx_to_dgl, edges_to_dgl, train_val_test_split
 from collections import defaultdict
 from numpy.linalg import norm
 import pickle
@@ -46,13 +46,17 @@ class CascadeDataset:
     enc_graph : dgl.Graph
       graph reconstructed starting from the cascades provided as input
 
-    dec_graph : dgl.Graph
+    inf_graph : dgl.Graph
       original influence graph (ground truth)
     """
 
     def __init__(self):
         self._enc_graph = None
-        self._dec_graph = None
+        self._inf_graph = None
+        self._add_self_loops = True
+        self._training_inf_graph = None
+        self._validation_inf_graph = None
+        self._test_inf_graph = None
 
     @property
     def enc_graph(self):
@@ -63,13 +67,45 @@ class CascadeDataset:
         self._enc_graph = enc_graph
 
     @property
-    def dec_graph(self):
-        return self._dec_graph
+    def inf_graph(self):
+        return self._inf_graph
 
-    @dec_graph.setter
-    def inf_graph(self, dec_graph):
-        self._dec_graph = dec_graph
+    @inf_graph.setter
+    def inf_graph(self, inf_graph):
+        self._inf_graph = inf_graph
 
+    @property
+    def add_self_loops(self):
+        return self._add_self_loops
+
+    @add_self_loops.setter
+    def add_self_loops(self, add_self_loops):
+        self._add_self_loops = add_self_loops
+
+    @property
+    def training_inf_graph(self):
+        return self._training_inf_graph
+
+    @training_inf_graph.setter
+    def training_inf_graph(self, training_graph):
+        self._training_inf_graph = training_graph
+
+    @property
+    def validation_inf_graph(self):
+        return self._validation_inf_graph
+
+    @validation_inf_graph.setter
+    def validation_inf_graph(self, validation_graph):
+        self._validation_inf_graph = validation_graph
+
+    @property
+    def test_inf_graph(self):
+        return self._test_inf_graph
+
+    @test_inf_graph.setter
+    def test_inf_graph(self, test_graph):
+        self._test_inf_graph = test_graph
+        
     def counting_weight(self, cascades, time_window=0):
         """ Counting strategy
 
@@ -224,7 +260,7 @@ class CascadeDataset:
         _ = [batch_append(u, v, w) for u in coordinates_dict for v,
              w in coordinates_dict[u].items()]
         # create the graph
-        graph = edges_to_dgl(src, dst, weights)
+        graph = edges_to_dgl(src, dst, weights, self._add_self_loops)
 
         if normalize:
             def normalize_weights(v):
@@ -259,29 +295,30 @@ class CascadeDataset:
           the negative graph
         """
         # TODO : try different sampling strategies
-        src, dst = self.dec_graph.edges()
+        src, dst = self._inf_graph.edges()
         # each source node is replicated k times
         neg_src = src.repeat_interleave(k)
         # create the destination tensor
-        neg_dst = th.randint(0, self.dec_graph.number_of_nodes(), (src.shape[0]*k,))
-        
-        return edges_to_dgl(neg_src, neg_dst, th.zeros_like(neg_src))
+        neg_dst = th.randint(0, self._inf_graph.number_of_nodes(), (len(src)*k,))
+
+        return edges_to_dgl(neg_src, neg_dst, th.zeros_like(neg_src), self._add_self_loops)
 
 
 class CascadeDatasetBuilder:
     """Class responsible for 
     building the dataset. 
     There are two main options:
-    
+
     i) Create the dataset by providing 
        the influence graph and the cascade file
 
     ii) Create the dataset by providing two 
        edgelist files: 
-       - the influence graph, i.e., the dec_graph
+       - the influence graph, i.e., the inf_graph
        - the cascade graph, i.e., the enc_graph
 
     """
+
     def __init__(self):
         # init everything to None
         self._graph_path = None
@@ -292,6 +329,11 @@ class CascadeDatasetBuilder:
         self._cascade_randomness = False
         self._save_cascade = None
         self._edge_weights_normalization = False
+        self._add_self_loops = True
+        self._training_size = 0.8
+        self._validation_size = 0.1
+        self._test_size = 0.1
+
 
     @property
     def graph_path(self):
@@ -320,7 +362,7 @@ class CascadeDatasetBuilder:
     @property
     def strategy(self):
         return self._strategy
-        
+
     @strategy.setter
     def strategy(self, strategy):
         if strategy not in ("counting", "tempdiff"):
@@ -351,10 +393,44 @@ class CascadeDatasetBuilder:
     def edge_weights_normalization(self, edge_normalization):
         self._edge_weights_normalization = edge_normalization
 
+    @property
+    def add_self_loops(self):
+        return self._add_self_loops
+
+    @add_self_loops.setter
+    def add_self_loops(self, add_self_loops):
+        self._add_self_loops = add_self_loops
+    
+    @property
+    def training_size(self):
+        return self._training_size
+
+    @training_size.setter
+    def training_size(self, training_size):
+        self._training_size = training_size
+
+    @property
+    def validation_size(self):
+        return self._validation_size
+
+    @validation_size.setter
+    def validation_size(self, validation_size):
+        self._validation_size = validation_size
+
+    @property
+    def test_size(self):
+        return self._test_size
+
+    @test_size.setter
+    def test_size(self, test_size):
+        self._test_size = test_size
+        
+
     def build(self, **kwargs) -> CascadeDataset:
         d = CascadeDataset()
+        d.add_self_loops = self._add_self_loops
 
-        # load/create the encoded graph            
+        # load/create the encoded graph
         if self._cascade_path:
             _, cascade_format = splitext(self._cascade_path)
             strategy_fn = {
@@ -369,13 +445,11 @@ class CascadeDatasetBuilder:
             coordinates_dict = strategy_fn(cascades, **kwargs)
             enc_graph = d.get_graph(coordinates_dict, self._edge_weights_normalization)
 
-
         elif self._enc_graph_path:
             # the encoded graph is provided in edgelist format
             nx_enc_graph = nx.read_weighted_edgelist(self._enc_graph_path,
-                                                     create_using=nx.DiGraph(), 
+                                                     create_using=nx.DiGraph(),
                                                      nodetype=int)
-                
             enc_graph = nx_to_dgl(nx_enc_graph)
 
         else:
@@ -385,29 +459,30 @@ class CascadeDatasetBuilder:
         nx_inf_graph = nx.read_weighted_edgelist(self._graph_path,
                                                  create_using=nx.DiGraph(),
                                                  nodetype=int)
-        inf_graph = nx_to_dgl(nx_inf_graph)
-        
+        inf_graph = nx_to_dgl(nx_inf_graph, 1)
+
         d.enc_graph = enc_graph
         d.inf_graph = inf_graph
+
         delta = d.inf_graph.number_of_nodes() - d.enc_graph.number_of_nodes()
         if delta > 0:
             # the encoded graph has fewer nodes than the inf graph
             d.enc_graph.add_nodes(delta)
-            
 
-        assert d.enc_graph.number_of_nodes() == d.inf_graph.number_of_nodes()
+        # create the normalization constant 
+        d.enc_graph.ndata['cu'] = 1/d.enc_graph.in_degrees().view(-1,1)
+        d.enc_graph.ndata['cv'] = 1/d.enc_graph.out_degrees().view(-1,1)
+
+        d.inf_graph.ndata['cu'] = 1/d.inf_graph.in_degrees().view(-1,1)
+        d.inf_graph.ndata['cv'] = 1/d.inf_graph.out_degrees().view(-1,1)
+
+        # create the training/validation/test segment of the decoded graph
+        train_edges, val_edges, test_edges = train_val_test_split(
+            inf_graph.edges(form='eid'),
+            (self._training_size, self._validation_size, self._test_size))
+
+        # create the training, validation and test edge subgraph
+        d.training_inf_graph = dgl.edge_subgraph(inf_graph, train_edges, preserve_nodes = True)
+        d.validation_inf_graph = dgl.edge_subgraph(inf_graph, val_edges, preserve_nodes = True)
+        d.test_inf_graph = dgl.edge_subgraph(inf_graph, test_edges, preserve_nodes = True)
         return d
-        
-            
-            
-
-            
-
-            
-                
-
-                
-
-            
-
-

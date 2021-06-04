@@ -1,4 +1,5 @@
 from collections import OrderedDict
+from functools import reduce
 import pandas as pd
 import torch as th
 import torch.nn as nn
@@ -7,6 +8,7 @@ from numpy.random import rand, permutation
 import csv
 import dgl
 import dgl_diffusion.loss as l
+
 
 
 def maybe_to_cpu(model):
@@ -19,7 +21,7 @@ def maybe_to_cpu(model):
 def dgl_to_nx(dgl_graph):
     """Convert a dgl graph
     into the corresponding networkx graph
-    
+
     Parameters
     ---------
     dgl_graph: dgl graph 
@@ -37,7 +39,8 @@ def dgl_to_nx(dgl_graph):
 
     return nxg
 
-def nx_to_dgl(nx_graph):
+
+def nx_to_dgl(nx_graph, scale=1):
     """Convert a networkx graph 
     into the corresponding dgl graph
 
@@ -57,12 +60,12 @@ def nx_to_dgl(nx_graph):
         edges[1].append(t)
         edges[2].append(w)
         
-    _ = [batch_append(s,d,ed['weight'])
+    _ = [batch_append(s,d,ed['weight']*scale)
          for s, d, ed in nx_graph.edges(data=True)]
     
     return edges_to_dgl(src, dst, weights)
 
-def edges_to_dgl(src, dst, weights):
+def edges_to_dgl(src, dst, weights, add_self_loops = True):
     """Create a dgl graph 
     with the edges provided as input
 
@@ -81,93 +84,118 @@ def edges_to_dgl(src, dst, weights):
 
     weights: list of int/float
       weight of the edge
+
+    add_self_loops: bool
+      if true each node becoems connected with itself
     
     Returns
     -------
       a dgl graph
 
     """
+    def concat(fpart, spart):
+        if isinstance(fpart, list) and isinstance(spart, list):
+            fpart.extend(fpart)
+        if isinstance(fpart, th.Tensor) and isinstance(spart, th.Tensor):
+            fpart = th.cat([fpart, spart])
+        if isinstance(fpart, list) and isinstance(spart, th.Tensor):
+            fpart.extend(spart.tolist())
+        if isinstance(fpart, th.Tensor) and isinstance(spart, list):
+            fpart = th.cat([fpart, th.tensor(spart)])
+        return fpart
+
+    if add_self_loops:
+        # add self loops to the graph
+        max_node = reduce(max, map(max, (src,dst)))
+        # create self loop edges
+        loop_src = th.arange(max_node)
+        src = concat(src, loop_src)
+        dst = concat(dst, loop_src)
+        weights = concat(weights,  th.ones(max_node))
+
+    dgl_graph = dgl.graph((src, dst))
+
     if not isinstance(weights, th.Tensor):
         weights = th.tensor(weights, dtype=th.float)
-    dgl_graph = dgl.graph((src, dst))
-    dgl_graph.edata['w'] = weights        
+    dgl_graph.edata['w'] = weights
+
     return dgl_graph
 
 
-def train_val_test_split(edge_data,
-                         segments_size = (.8, .1, .1),
-                         positive_edges_distribution = (.8, .1, .1)): 
-    """Create the training,validation,test mask.
+# def train_val_test_split(edge_data,
+#                          segments_size = (.8, .1, .1),
+#                          positive_edges_distribution = (.8, .1, .1)): 
+#     """Create the training,validation,test mask.
 
-    The fractions specified in segments_size are 
-    computed with respect to the total size of the 
-    graphs, i.e., the number of positive edges plus the
-    number of negative edges
+#     The fractions specified in segments_size are 
+#     computed with respect to the total size of the 
+#     graphs, i.e., the number of positive edges plus the
+#     number of negative edges
     
-    The fractions specified in the positive_edges_distribution
-    are with respect to the total number of positive edges.
-    Therefore, if positive_edge_distribution['training'] is 0.8,
-    it means that the training set gets the 80% of the number
-    of positive edges
+#     The fractions specified in the positive_edges_distribution
+#     are with respect to the total number of positive edges.
+#     Therefore, if positive_edge_distribution['training'] is 0.8,
+#     it means that the training set gets the 80% of the number
+#     of positive edges
     
 
-    Parameters
-    ----------
-    edge_data: dict
-      data associated with the edge of the graph to be splitted
+#     Parameters
+#     ----------
+#     edge_data: dict
+#       data associated with the edge of the graph to be splitted
     
-    segments_size: list-like of float
-      the size of each segment - in percentage wrt the 
-      total number of edges in the graph
+#     segments_size: list-like of float
+#       the size of each segment - in percentage wrt the 
+#       total number of edges in the graph
 
-    positive_edges_distribution: list-like of float
-      fraction of the total positive edges to be 
-      included in the corresponding segment
+#     positive_edges_distribution: list-like of float
+#       fraction of the total positive edges to be 
+#       included in the corresponding segment
 
-    Returns
-    -------
-    training_mask, validation_mask, test_mask: tensors of boolean 
-      the mask associated with teach segment of the data
-    """
-    positive_edges_mask = edge_data['w'] > 0
-    positive_edges_id,  = th.where(positive_edges_mask)
-    negative_edges_id,  = th.where(~positive_edges_mask)
+#     Returns
+#     -------
+#     training_mask, validation_mask, test_mask: tensors of boolean 
+#       the mask associated with teach segment of the data
+#     """
+#     positive_edges_mask = edge_data['w'] > 0
+#     positive_edges_id,  = th.where(positive_edges_mask)
+#     negative_edges_id,  = th.where(~positive_edges_mask)
 
-    # create a permutation of the positive edges
-    positive_edges_id = permutation(positive_edges_id)
-    negative_edges_id = permutation(negative_edges_id)
+#     # create a permutation of the positive edges
+#     positive_edges_id = permutation(positive_edges_id)
+#     negative_edges_id = permutation(negative_edges_id)
 
-    # compute the size of each segment
-    total_size, = edge_data['w'].shape
-    training_size, validation_size, test_size =\
-        map(lambda x: int(x*total_size), segments_size)
-    training_positive_size, validation_positive_size, test_positive_size =\
-        map(lambda x: int(x*positive_edges_id.shape[0]), positive_edges_distribution)
+#     # compute the size of each segment
+#     total_size, = edge_data['w'].shape
+#     training_size, validation_size, test_size =\
+#         map(lambda x: int(x*total_size), segments_size)
+#     training_positive_size, validation_positive_size, test_positive_size =\
+#         map(lambda x: int(x*positive_edges_id.shape[0]), positive_edges_distribution)
      
-    # create the masks
-    training_mask = th.zeros(edge_data['w'].shape, dtype=th.bool)
-    validation_mask = th.zeros_like(training_mask, dtype=th.bool)
-    test_mask = th.zeros_like(training_mask, dtype=th.bool)
+#     # create the masks
+#     training_mask = th.zeros(edge_data['w'].shape, dtype=th.bool)
+#     validation_mask = th.zeros_like(training_mask, dtype=th.bool)
+#     test_mask = th.zeros_like(training_mask, dtype=th.bool)
 
-    # distribute the positive edges among the different segments
-    training_mask[positive_edges_id[:training_positive_size]] = True
-    validation_mask[positive_edges_id[training_positive_size:
-                                      training_positive_size+validation_positive_size]] = True
-    test_mask[positive_edges_id[-test_positive_size:]] = True    
+#     # distribute the positive edges among the different segments
+#     training_mask[positive_edges_id[:training_positive_size]] = True
+#     validation_mask[positive_edges_id[training_positive_size:
+#                                       training_positive_size+validation_positive_size]] = True
+#     test_mask[positive_edges_id[-test_positive_size:]] = True    
     
-    # distribute the negative edges
-    training_negative_size = training_size-training_positive_size
-    validation_negative_size = validation_size-validation_positive_size
-    test_negative_size = test_size-validation_positive_size
+#     # distribute the negative edges
+#     training_negative_size = training_size-training_positive_size
+#     validation_negative_size = validation_size-validation_positive_size
+#     test_negative_size = test_size-validation_positive_size
 
-    training_mask[negative_edges_id[:training_negative_size]] = True
-    validation_mask[negative_edges_id[training_negative_size:
-                                      training_negative_size+validation_negative_size]] = True
-    test_mask[negative_edges_id[-test_negative_size:]] = True
+#     training_mask[negative_edges_id[:training_negative_size]] = True
+#     validation_mask[negative_edges_id[training_negative_size:
+#                                       training_negative_size+validation_negative_size]] = True
+#     test_mask[negative_edges_id[-test_negative_size:]] = True
 
-    return training_mask, validation_mask, test_mask
+#     return training_mask, validation_mask, test_mask
 
-def train_val_test_split_(edge_ids,
+def train_val_test_split(edge_ids,
                          segments_size = (.8, .1, .1)):
 
     edge_ids_permutation = permutation(edge_ids)

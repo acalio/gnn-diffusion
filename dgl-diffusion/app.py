@@ -19,6 +19,7 @@ import dgl
 import networkx as nx
 import itertools
 
+
 class ListParser(click.Option):
     def type_cast_value(self, ctx, value):
         try:
@@ -56,14 +57,14 @@ class ListParser(click.Option):
 @click.option("--force/--no-force", type=bool, default=False)
 @click.option("--normalize-weights/--no-normalize-weights", default=True)
 @click.option("--evaluation-metric", type=click.Choice(["mse", "mae"]), default="mse")
-@click.option("--negative-positive-ratio", type=float, default=None) 
+@click.option("--negative-positive-ratio", type=float, default=None)
 @click.option("--loss-reduction", type=click.Choice(["sum", "mean"]), default="mean")
 @click.option("--evaluation-metric-reduction", type=click.Choice(["sum", "mean"]), default="mean")
 @click.option("--clip-at", type=float, default=1.0)
 @click.option("--sampler-fanout", cls=ListParser, default="[]",)
 @click.option("--batch-size", type=int, default=1024)
 def main(netpath, cascade_path, epochs,
-         optimizer,learning_rate, loss,
+         optimizer, learning_rate, loss,
          device, encoder_units, encoder_agg_act,
          encoder_out_act, encoder_weight, decoder_units,
          decoder_act, cascade_strategy, cascade_time_window,
@@ -74,23 +75,37 @@ def main(netpath, cascade_path, epochs,
          negative_positive_ratio,
          loss_reduction,
          evaluation_metric_reduction,
-         clip_at, sampler_fanout,
-         batch_size):
+         clip_at):
+
+    # create the encoder
+    encoder = InfluenceEncoder(
+        *encoder_units, encoder_agg_act, encoder_out_act, device)
+
+    # create the decoder
+    decoder = InfluenceDecoder(get_architecture(
+        decoder_units, decoder_act))
+
+    # create the encoder decoder model
+    net = InfEncDec(encoder, decoder)
 
     # read the data
     builder = CascadeDatasetBuilder()
     builder.graph_path = netpath
+    # set the training/validation/test set segments size
+    builder.training_size = 1.0 - validation_size - test_size
+    builder.validation_size = validation_size
+    builder.test_size = test_size
     load_kws = dict()
     data_pm, already_in_repo = None, False
     if data_repo:
         # check if the enC_graph is already
         # available in the data repository
         data_pm = PManager(data_repo, force)
-        # create the hash 
-        data_pm.hash(("infgraph",os.path.basename(netpath)),
-                     ("cascade",os.path.basename(cascade_path)),
-                     ("cascade_strategy",cascade_strategy),
-                     ("cascade_time_window",cascade_time_window),
+        # create the hash
+        data_pm.hash(("infgraph", os.path.basename(netpath)),
+                     ("cascade", os.path.basename(cascade_path)),
+                     ("cascade_strategy", cascade_strategy),
+                     ("cascade_time_window", cascade_time_window),
                      ("normalize_weights", normalize_weights),
                      ("max_cascade", max_cascade))
 
@@ -113,9 +128,6 @@ def main(netpath, cascade_path, epochs,
         load_kws['time_window'] = cascade_time_window
 
     data = builder.build(**load_kws)
-    
-    # contruct the negative graph
-    negative_graph = data.get_negative_graph(int(negative_positive_ratio)) # it must greater than 0
 
     # split into training, validation and test set
     # check if the split sizes are correct
@@ -124,38 +136,38 @@ def main(netpath, cascade_path, epochs,
               "and test size mustbe at most 1\033[0m'")
         sys.exit(-1)
 
+
     neg_training_ids, neg_validation_ids, neg_test_ids = train_val_test_split_(negative_graph.number_of_edges(),
-                                                                  (1-validation_size-test_size, validation_size, test_size))
+                                                                               (1-validation_size-test_size, validation_size, test_size))
 
     pos_training_ids, pos_validation_ids, pos_test_ids = train_val_test_split_(data.dec_graph.number_of_edges(),
-                                                                  (1-validation_size-test_size, validation_size, test_size)) 
-    #prepare the labels 
+                                                                               (1-validation_size-test_size, validation_size, test_size))
+    # prepare the labels
     pos_labels = data.dec_graph.edata['w']
     neg_labels = negative_graph.edata['w']
-    
+
     # preare the logger
     training_logger = MetricLogger(['iter', 'time', loss, evaluation_metric,
-                                    f'pos-{evaluation_metric}', f'neg-{evaluation_metric}' ],
+                                    f'pos-{evaluation_metric}', f'neg-{evaluation_metric}'],
                                    ['%d', '%d', '%.4f', '%.4f', '%.4f', '%.4f'])
-    
+
     validation_logger = MetricLogger(['iter',  evaluation_metric, f'pos-{evaluation_metric}', f'neg-{evaluation_metric}'],
                                      ['%d', '%.4f', '%.4f', '%.4f'])
     test_logger = MetricLogger(['iter', evaluation_metric, f'pos-{evaluation_metric}', f'neg-{evaluation_metric}'],
-                               ['%d', '%.4f', '%.4f','%.4f'])
-    
+                               ['%d', '%.4f', '%.4f', '%.4f'])
 
-    #create training/validation/test labels merging the positive and negative graphs
+    # create training/validation/test labels merging the positive and negative graphs
     training_labels = th.cat([pos_labels[pos_training_ids],
                               neg_labels[neg_training_ids]], 0)
     validation_labels = th.cat([pos_labels[pos_validation_ids],
-                              neg_labels[neg_validation_ids]], 0)
+                                neg_labels[neg_validation_ids]], 0)
     test_labels = th.cat([pos_labels[pos_test_ids],
-                              neg_labels[neg_test_ids]], 0)
+                          neg_labels[neg_test_ids]], 0)
 
     # embeddings
     embeddings = nn.Embedding(
         data.enc_graph.number_of_nodes(), encoder_units[0])
-    
+
     feat = embeddings.weight
     nn.init.xavier_uniform_(feat)
     # Create the encoder
@@ -176,85 +188,51 @@ def main(netpath, cascade_path, epochs,
     evaluation_fn = get_loss(evaluation_metric, evaluation_metric_reduction)
     
     # initialize the optimizer
-    opt = get_optimizer(optimizer)\
-        (itertools.chain(net.parameters(), embeddings.parameters()), lr=learning_rate)
-    # stochastic training - if sampler_fanout is None,
-    # then all the neighbors are used
-    if len(sampler_fanout)!=0:
-        sampler = dgl.dataloading.MultiLayerNeighborSampler(sampler_fanout)
-    else:
-        sampler = dgl.dataloading.MultiLayerFullNeighborSampler(len(encoder.conv_layers))
-    data_loader = dgl.dataloading\
-                     .EdgeDataLoader(data.enc_graph,
-                                     data.enc_graph.edges(form='eid'),
-                                     sampler,
-#                                     device = device,
-                                     batch_size = batch_size,
-                                     shuffle = False,
-                                     num_workers = 0)
+    opt = get_optimizer(optimizer)(itertools.chain(
+        net.parameters(), embeddings.parameters()), lr=learning_rate)
 
-    # start of the training loop
     with tqdm.trange(epochs) as pbar:
         postfix_dict = OrderedDict({'loss': 'nan', f'val-{evaluation_metric}': 'nan'})
         for epoch in pbar:
             net.train()
-            epoch_start = time.time()
-            for input_nodes, pgraph, blocks in data_loader:
-                # move everything on the desired device
-                blocks = [b.to(th.device(device)) for b in blocks]
+            pos_predictions, _ = net(data.enc_graph, feat, data.dec_graph)  # , negative_graph)
 
-                # compute the alternative pos_graph, which the 
-                # subgraph of data.dec_graph (the influence graph)
-                # induced by the input_nodes
-                batch_nodes = pgraph.ndata[dgl.NID]
-                pos_graph = dgl.node_subgraph(data.dec_graph, batch_nodes).to(th.device(device))
-                neg_graph = dgl.node_subgraph(negative_graph, batch_nodes).to(th.device(device))
-                inputs = embeddings(input_nodes).to(th.device(device))
-#                inputs = feat[input_nodes].to(th.device(device))
-                
-                # get the predictions
-                pos_predictions, neg_predictions = net(blocks, inputs, pos_graph, neg_graph)
-                
-
-                # get the predictions of only the edges included in the training set
-                pos_batch_training_ids = [eid for eid, _ in filter(lambda e: e[1] in pos_training_ids, enumerate(pos_graph.edata[dgl.EID].tolist()))]
-                neg_batch_training_ids = [eid for eid, _ in filter(lambda e: e[1] in neg_training_ids, enumerate(neg_graph.edata[dgl.EID].tolist()))]
-
-
-                batch_training_labels = th.cat([pos_labels[pos_batch_training_ids],
-                                          neg_labels[neg_batch_training_ids]], 0).to(th.device(device))
-                
-                # concatenate the predictions
-                batch_predictions = th.cat([pos_predictions[pos_batch_training_ids],
-                                      neg_predictions[neg_batch_training_ids]], 0)
-                
-                # total scores
-                loss_value = loss_fn(batch_predictions, batch_training_labels)
-
-                opt.zero_grad()
-                loss_value.backward()
-
-                nn.utils.clip_grad_norm_(itertools.chain(net.parameters(), embeddings.parameters()), clip_at) 
-                opt.step()
-                postfix_dict['loss'] = '%.03f' % loss_value.item()
-                postfix_dict['max'] = '%.03f' % feat.max()
-                pbar.set_postfix(postfix_dict)
-
+            # concatenate the prediction
+#            predictions = th.cat([pos_predictions[pos_training_ids],
+#                                  neg_predictions[neg_training_ids]], 0)
+            predictions = pos_predictions[pos_training_ids]
+            # total scores
+            loss_value = loss_fn(predictions, training_labels)
+            opt.zero_grad()
+            loss_value.backward()
+#            nn.utils.clip_grad_norm_(itertools.chain(
+#                net.parameters(), embeddings.parameters()), clip_at)
+            opt.step()
+            postfix_dict['loss'] = '%.03f' % loss_value.item()
+            pbar.set_postfix(postfix_dict)
             if epoch % training_log_interval == 0:
                 # compute the evaluation metric
-                # copy the model into the cpu
-                switched = maybe_to_cpu(net.decoder)
-                pos_metric_value = evaluate(net.decoder, data.dec_graph, feat, 
-                                            pos_labels[pos_training_ids], pos_training_ids, evaluation_fn)
+                pos_metric_value = evaluate(net,
+                                            data.enc_graph,
+                                            feat,
+                                            data.dec_graph,
+                                            pos_labels[pos_training_ids],
+                                            pos_training_ids,
+                                            evaluation_fn)
 
-                neg_metric_value = evaluate(net.decoder, negative_graph, feat, 
-                                            neg_labels[neg_training_ids], neg_training_ids, evaluation_fn)
-                
+                neg_metric_value = evaluate(net,
+                                            data.enc_graph,
+                                            feat,
+                                            negative_graph,
+                                            neg_labels[neg_training_ids],
+                                            neg_training_ids,
+                                            evaluation_fn)
+
                 training_logger.log(**{
                     'iter': epoch,
                     'time': (epoch_start - time.time()),
                     loss: loss_value.item(),
-                    evaluation_metric: .5* (pos_metric_value+neg_metric_value),
+                    evaluation_metric: .5 * (pos_metric_value+neg_metric_value),
                     f'pos-{evaluation_metric}': pos_metric_value,
                     f'neg-{evaluation_metric}': neg_metric_value
                 })
@@ -277,85 +255,88 @@ def main(netpath, cascade_path, epochs,
                     evaluation_metric: metric_value,
                     f'pos-{evaluation_metric}': pos_metric_value,
                     f'neg-{evaluation_metric}': neg_metric_value
-                    })
-                    
+                })
+
                 postfix_dict[f'val-{evaluation_metric}'] = '%.03f' % metric_value
                 pbar.set_postfix(postfix_dict)
 
-                if switched:
-                    net.decoder.to(th.device('cuda'))
-                    net.decoder.device = th.device('cuda')
-
     net.eval()
     # compute the performance on the test set
-    # move everything on the cpu
-    net.to('cpu')
-    pos_test_metric = evaluate(net.decoder,  data.dec_graph, feat,
-                               pos_labels[pos_test_ids], pos_test_ids, evaluation_fn)
-    neg_test_metric = evaluate(net.decoder, negative_graph, feat,
-                               neg_labels[neg_test_ids], neg_test_ids, evaluation_fn)
-    
-    print(f"Test Set {evaluation_metric}:{.5*(pos_test_metric+neg_test_metric)}")
-    print(f"\t(Positive) Test Set {evaluation_metric}:{pos_test_metric}") 
-    print(f"\t (Negative) Test Set {evaluation_metric}:{neg_test_metric}") 
+    pos_test_metric = evaluate(net,
+                               data.enc_graph,
+                               feat,
+                               data.dec_graph,
+                               pos_labels[pos_test_ids],
+                               pos_test_ids,
+                               evaluation_fn)
+    neg_test_metric = evaluate(net,
+                               data.enc_graph,
+                               feat,
+                               negative_graph,
+                               neg_labels[neg_test_ids],
+                               neg_test_ids,
+                               evaluation_fn)
 
+    print(f"Test Set {evaluation_metric}:{.5*(pos_test_metric+neg_test_metric)}")
+    print(f"\t(Positive) Test Set {evaluation_metric}:{pos_test_metric}")
+    print(f"\t (Negative) Test Set {evaluation_metric}:{neg_test_metric}")
+    print(feat[0])
     # compute some prediction on training set over the entire graph
     with th.no_grad():
         pos_src, pos_dst, pos_eid = data.dec_graph.edges(form="all")
         neg_src, neg_dst, neg_eid = negative_graph.edges(form="all")
-        pos_pred = net.decoder(data.dec_graph, feat).squeeze()
-        for _ in  range(30):
-            i = choice(data.dec_graph.number_of_edges(), 1).item()
-            src, trg = pos_src[i], pos_dst[i]
-            print(src.item(), trg.item(), data.dec_graph.edata['w'][i].item())
-            v = th.cat([embeddings(src), embeddings(trg)], 0)
-            print(f"\t {v}, Value: {net.decoder.decoder(v)}")
-            # print(neg_src[i].item(), neg_dst[i].item(), negative_graph.edata['w'][i].item())
-
-        # print(pos_pred[:30], pos_pred.max())
+        pos_pred = net(data.enc_graph, feat, data.dec_graph)[0].squeeze()
+        # print(pos_pred[:30])
+        # print(data.dec_graph.edata['w'][:30])
         print(f"{evaluation_metric}:{evaluation_fn(pos_pred, data.dec_graph.edata['w'])}")
-        neg_pred = net.decoder(negative_graph, feat).squeeze()
-        # print(neg_pred[:30], neg_pred.max())
-        print(f"{evaluation_metric}:{evaluation_fn(neg_pred, negative_graph.edata['w'])}")       
+#        neg_pred = net.decoder(negative_graph, feat).squeeze()
+#        print(neg_pred[:30], neg_pred.min())
+#        print(f"Accuracy:{evaluation_fn(neg_pred, negative_graph.edata['w'])}")
+        for _ in range(50):
+            i = choice(pos_eid, 1).item()
+
+            print(pos_src[i].item(), pos_dst[i].item(),
+                  data.dec_graph.edata['w'][i].item(), pos_pred[i])
+#            print(neg_src[i].item(), neg_dst[i].item(), negative_graph.edata['w'][i].item())
 
     # persist results
     if results_repo:
         pm = PManager(results_repo, force)
         # generate the hash
         pm.hash(("infgraph", os.path.basename(netpath)),
-                ("cascade", os.path.basename(cascade_path)), 
+                ("cascade", os.path.basename(cascade_path)),
                 ("epochs", epochs),
                 ("loss", loss),
                 ("learning_rate", learning_rate),
                 ("encoder_units", encoder_units),
                 ("encoder_agg_acc", encoder_agg_act),
-                ("encoder_out_act",encoder_out_act),
+                ("encoder_out_act", encoder_out_act),
                 ("decoder_units", decoder_units),
                 ("decoder_act", decoder_act),
                 ("cascade_strategy",  cascade_strategy),
-                ("cascade_time_window",cascade_time_window),
+                ("cascade_time_window", cascade_time_window),
                 ("normalize_weights", normalize_weights),
                 ("max_cascade", max_cascade),
                 ("cascade_randomness", cascade_randomness))
 
-
         training_loss_logger_df = training_logger.close()
         validation_loss_logger_df = validation_logger.close()
-        
 
         pm.persist(
             # ("negative_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(negative_graph), f), "wb"),
-            ("enc_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(data.enc_graph), f), "wb"),
-            ("train_logger.csv", lambda f: training_loss_logger_df.to_csv(f, index=None ), "wb"),
-            ("validation_logger.csv", lambda f: validation_loss_logger_df.to_csv(f, index=None ), "wb"))
+            ("enc_graph.edgelist", lambda f: nx.write_weighted_edgelist(
+                dgl_to_nx(data.enc_graph), f), "wb"),
+            ("train_logger.csv", lambda f: training_loss_logger_df.to_csv(f, index=None), "wb"),
+            ("validation_logger.csv", lambda f: validation_loss_logger_df.to_csv(f, index=None), "wb"))
         pm.close()
 
     # save the encoded graph
     if data_pm:
         data_pm.persist(
-            # ("target_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(target_graph), f), "wb"), 
+            # ("target_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(target_graph), f), "wb"),
             ("enc_graph.edgelist", lambda f: nx.write_weighted_edgelist(dgl_to_nx(data.enc_graph), f), "wb"))
         data_pm.close()
-        
+
+
 if __name__ == '__main__':
     main()

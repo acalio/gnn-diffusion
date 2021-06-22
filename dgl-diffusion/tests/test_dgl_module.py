@@ -12,7 +12,7 @@ from dgl_diffusion.util import *
 from collections import OrderedDict
 import pandas as pd
 
-DATA_HOME = "/home/antonio/Data/gnn-data/"
+DATA_HOME = "/home/antonio/Garbage/data/"
 INPUT_SIZE = 6
 
 def setup(tw=1):

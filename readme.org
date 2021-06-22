@@ -1,1 +1,105 @@
-* GNN Diffusion
+* Cascade Learning
+
+This project is developed as part of an ongoing  research paper.
+
+* Abstract
+We consider the problem of predicting an information diffusion graph
+from an interaction graph.
+
+A diffusion graph  is defined as the directed graph
+underlying a specific diffusion process, from which a set of
+activation cascades are generated. On the other hand, an interaction graph  is defined
+as the directed graph derived from those cascades.
+
+Building on recent progress in deep  learning on graph-structured data,
+here we evaluate the opportunity of leveraging on  graph convolutional
+autoencoders to learn low-dimensional representations for the nodes
+in the graph so that we  can effectively
+estimate the amount of influence associated with each edge in the
+diffusion graph.
+
+* Requirements
+In order to run the project you just need a working Docker
+configuration.
+* Installation
+The application comprises for two main modules, referred as:
+1. /cascade-generator/ - it is the module required to generate the
+   information cascades
+2. /cascade-learning/ - it is the module required to address the
+   learning task
+** cascade-generator
+Move into the =cascade-generator= folder, then build the docker image.
+
+    cd cascade-generator
+    docker build -t cas-gen .
+** cascade-learning
+Move into the =dgl-diffusion= folder, then build the docker image.
+    
+    cd cascade-generator
+    docker build -t cas-learn .
+* Usage
+Once the docker images have been correctly deployed you can run the
+application as follows.
+
+** Run the cascade-generator container
+
+Example: 
+
+    docker container run -v <path-to-your-networks-data>:/data -v
+    <path-to-your-results-folder>:/output cas-gen python app.py
+    /data/path/to/inf/graph ic -r 50 --size 1 -o
+    /output/path/to/store/cascades
+
+The above command launch the cascade generator on the specified
+influence graph and it generates 50 cascades of information according
+to the IC model.
+Each cascade starts from a single seed node selected uniformly at random.
+
+There are many other options.
+
+To have a more comprehensive guide, just
+issue the command:
+    
+    docker container run -v <path-to-your-networks-data>:/data -v
+    <path-to-your-results-folder>:/output cas-gen python app.py ---help
+
+
+** Run the cascade-learning container
+
+Example: 
+
+    docker container run -v <path-to-your-networks-data>:/data -v
+    <path-to-your-results-folder>:/output cas-learn python app.py
+    ---help /data/path/to/inf/graph  /data/path/to/cascades
+    --decoder-units '[48, 24, 1]' --decoder-act '["sigmoid",
+    "sigmoid"]' --encoder-units "[24, 12, 24]" --encoder-agg-act relu
+    --encoder-out-act relu --validation-size .2 --test-size .2
+    --loss mse --learning-rate 0.1
+    --cascade-time-window 1 --negative-positive-ratio 3 --epochs 100
+    --loss-reduction mean
+
+The above command will create a graph autoencoder with the following
+properties:
+- An embedding layer of 24 units
+- An encoder with one graph convolutional layer having:
+  - 24 input units
+  - 12 hidden units
+  - 24 hidden units
+    With a ReLU activation function
+- A decoder with two layers having:
+  - 48 input units
+  - 24 hidden units
+  - 1 output units
+
+Also, the architecture is trained to minimize the mean squared error
+over the edges of the influence graph.    
+
+There are many other options.
+To have a more comprehensive guide, just
+issue the command:
+    docker container run -v <path-to-your-networks-data>:/data -v
+    <path-to-your-results-folder>:/output cas-learn python app.py
+    ---help     
+
+
+
